@@ -109,6 +109,48 @@ async def get_product_price(page):
         print(f"Error getting price: {e}")
         return None
 
+async def get_product_biomarkers(page):
+    print("Getting product biomarkers...")
+    try:
+        # First check for and click the "Lees meer" button if it exists
+        try:
+            show_more_button = await page.query_selector('a.show-more')
+            if show_more_button:
+                print("Found 'Lees meer' button, expanding content...")
+                await show_more_button.click()
+                # Wait for the expanded state
+                await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
+                                          timeout=5000)
+                print("Content expanded successfully")
+        except Exception as e:
+            print(f"Note: No 'Lees meer' button found or error expanding: {e}")
+        
+        # Now get the biomarkers from the possibly expanded content
+        await page.wait_for_selector('div.desc-wrapper ul')
+        
+        biomarkers = await page.evaluate('''
+            () => {
+                const ul = document.querySelector('div.desc-wrapper ul');
+                if (!ul) return [];
+                
+                return Array.from(ul.querySelectorAll('li')).map(li => {
+                    return li.textContent.trim();
+                });
+            }
+        ''')
+        
+        if biomarkers:
+            print(f"Found {len(biomarkers)} biomarkers")
+            for marker in biomarkers:
+                print(f"- {marker}")
+            return biomarkers
+            
+        print("No biomarkers found")
+        return []
+    except Exception as e:
+        print(f"Error getting biomarkers: {e}")
+        return []
+
 async def visit_product_page(page, product):
     print(f"\nVisiting product: {product['name']}")
     print(f"URL: {product['link']}")
@@ -122,8 +164,12 @@ async def visit_product_page(page, product):
     # Get the price using the new function
     price = await get_product_price(page)
     
-    # Add price to product data
+    # Get biomarkers using the new function
+    biomarkers = await get_product_biomarkers(page)
+    
+    # Add data to product
     product['price'] = price
+    product['biomarkers'] = biomarkers
     
     print("Successfully loaded product page")
     return product
@@ -159,12 +205,17 @@ async def main():
             # Add a small delay between requests to be nice to the server
             await asyncio.sleep(2)
         
-        # Print all products with their prices
-        print("\nAll products with prices:")
+        # Print all products with their details
+        print("\nAll products with details:")
         for product in products_with_details:
             print(f"Name: {product['name']}")
             print(f"Price: {product['price']}")
-            print(f"URL: {product['link']}\n")
+            print(f"URL: {product['link']}")
+            if product['biomarkers']:
+                print("Biomarkers:")
+                for marker in product['biomarkers']:
+                    print(f"  - {marker}")
+            print()
         
         print("\nFinished visiting all product pages")
         await browser.close()

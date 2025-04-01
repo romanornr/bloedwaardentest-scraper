@@ -401,31 +401,41 @@ async def get_product_biomarkers(page):
         
         # If we find text about biomarkers, use the complex extraction
         if 'biomarkers' in content_text.lower() or 'gemeten worden' in content_text.lower():
-            return await extract_biomarkers_from_content(page)
-        
+            biomarkers = await extract_biomarkers_from_content(page)
+            if biomarkers:
+                return biomarkers
+                
         # Fallback to simple list extraction if no complex structure found
-        await page.wait_for_selector('div.desc-wrapper ul')
-        simple_markers = await page.evaluate('''
-            () => {
-                const ul = document.querySelector('div.desc-wrapper ul');
-                if (!ul) return [];
-                
-                // Filter out instruction texts
-                const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload'];
-                
-                return Array.from(ul.querySelectorAll('li'))
-                    .map(li => li.textContent.trim())
-                    .filter(text => !excludeTexts.some(exclude => 
-                        text.toLowerCase().includes(exclude)
-                    ));
-            }
-        ''')
-        
-        if simple_markers:
-            logger.debug(f"Found {len(simple_markers)} simple biomarkers")
-            return simple_markers
+        try:
+            await page.wait_for_selector('div.desc-wrapper ul', timeout=5000)
+            simple_markers = await page.evaluate('''
+                () => {
+                    const ul = document.querySelector('div.desc-wrapper ul');
+                    if (!ul) return [];
+                    
+                    // Filter out instruction texts
+                    const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload'];
+                    
+                    return Array.from(ul.querySelectorAll('li'))
+                        .map(li => li.textContent.trim())
+                        .filter(text => !excludeTexts.some(exclude => 
+                            text.toLowerCase().includes(exclude)
+                        ));
+                }
+            ''')
             
-        logger.debug("No biomarkers found")
+            if simple_markers:
+                logger.debug(f"Found {len(simple_markers)} simple biomarkers")
+                return simple_markers
+        except Exception as e:
+            logger.debug(f"No unordered lists found or error: {e}")
+        
+        # Try edge case: ordered lists
+        ordered_list_markers = await extract_biomarkers_from_ordered_list(page)
+        if ordered_list_markers:
+            return ordered_list_markers
+            
+        logger.debug("No biomarkers found with any extraction method")
         return []
         
     except Exception as e:
@@ -599,6 +609,68 @@ async def save_product_realtime(product, base_url, filename='data/products.json'
     except Exception as e:
         logger.error(f"Error saving product '{product.get('name', 'unknown')}' to JSON: {e}")
         return None
+
+async def extract_biomarkers_from_ordered_list(page):
+    """
+    Handle edge case where biomarkers are in an ordered list (<ol>).
+    Specifically targets <ol> elements and excludes instruction lists.
+    """
+    logger.debug("🔍 Attempting to extract biomarkers from ordered lists...")
+    try:
+        markers = await page.evaluate('''
+            () => {
+                // Helper function to clean text
+                const cleanText = (text) => text.replace(/\\s+/g, ' ').trim();
+                
+                // Specifically target <ol> elements
+                const orderedLists = Array.from(document.querySelectorAll('div.desc-wrapper ol'));
+                
+                if (orderedLists.length === 0) {
+                    console.log('No ordered lists found in description');
+                    return [];
+                }
+                
+                // Process each ordered list
+                let biomarkers = [];
+                
+                for (const ol of orderedLists) {
+                    // Extract markers from list items
+                    const items = Array.from(ol.querySelectorAll('li'))
+                        .map(li => cleanText(li.textContent))
+                        .filter(text => {
+                            // Filter out instruction-like texts and empty items
+                            const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload', 'plaats je bestelling'];
+                            const isInstruction = excludeTexts.some(exclude => 
+                                text.toLowerCase().includes(exclude)
+                            );
+                            
+                            // Check if it's likely a biomarker by looking for keywords or patterns
+                            const possibleBiomarker = /[A-Z][a-z]+|[A-Z]{2,}|Vitamine|Glucose|Cholesterol/.test(text);
+                            
+                            return text.length > 0 && !isInstruction && possibleBiomarker;
+                        });
+                    
+                    if (items.length > 0) {
+                        biomarkers = biomarkers.concat(items);
+                    }
+                }
+                
+                return biomarkers;
+            }
+        ''')
+        
+        if markers and len(markers) > 0:
+            logger.info(f"✅ Found {len(markers)} biomarkers in ordered lists")
+            for marker in markers:
+                logger.debug(f"  • {marker}")
+            return markers
+            
+        logger.debug("No biomarkers found in ordered lists")
+        return []
+        
+    except Exception as e:
+        logger.warning(f"❌ Error extracting biomarkers from ordered lists: {e}")
+        return []
 
 async def main():
     urls = [

@@ -82,13 +82,20 @@ def log_product_info(product):
     logger.info(f"│ Price: {product['price']}")
     logger.info(f"│ URL: {product['link']}")
     
+    # Display biomarker count information
+    if 'biomarker_count' in product:
+        if 'category_count' in product:
+            logger.info(f"│ Biomarkers: {product['biomarker_count']} across {product['category_count']} categories")
+        else:
+            logger.info(f"│ Biomarkers: {product['biomarker_count']}")
+    
     if product.get('biomarkers'):
         logger.info("│")
         logger.info("│ Biomarkers:")
         for marker in product['biomarkers']:
             if isinstance(marker, dict):
-                logger.info(f"│   {marker['category']}:")
-                for biomarker in marker['markers']:
+                logger.info(f"│   {marker['category']} ({len(marker.get('markers', []))} markers):")
+                for biomarker in marker.get('markers', []):
                     logger.info(f"│     • {biomarker}")
             else:
                 logger.info(f"│     • {marker}")
@@ -480,6 +487,36 @@ async def try_load_page(page, url, max_retries=3):
     logger.error("❌ Failed to load page with all strategies")
     return False
 
+def count_biomarkers(biomarkers):
+    """
+    Count biomarkers in different formats and return count information.
+    Returns a tuple of (total_count, category_count) where category_count may be None.
+    """
+    # Initialize counts
+    total_count = 0
+    category_count = None
+    
+    # Handle empty biomarkers
+    if not biomarkers:
+        return 0, None
+    
+    # Check if we have a list
+    if isinstance(biomarkers, list):
+        # Check if we have categorized biomarkers (list of dicts)
+        if biomarkers and isinstance(biomarkers[0], dict):
+            # Count all markers across all categories
+            total_count = sum(len(category.get('markers', [])) for category in biomarkers)
+            category_count = len(biomarkers)
+            logger.debug(f"Counted {total_count} biomarkers across {category_count} categories")
+        else:
+            # Simple list count for flat biomarker list
+            total_count = len(biomarkers)
+            logger.debug(f"Counted {total_count} biomarkers in flat list")
+    else:
+        logger.warning("⚠️ Unexpected biomarker format for counting")
+    
+    return total_count, category_count
+
 async def visit_product_page(page, product):
     """
     Visit a product page and extract its details.
@@ -513,6 +550,7 @@ async def visit_product_page(page, product):
             logger.info("⏩ Skipping product with zero price")
             product['price'] = 0
             product['biomarkers'] = []
+            product['biomarker_count'] = 0
             product['skipped'] = True
             product['reason'] = "Zero price product"
             return product
@@ -535,7 +573,7 @@ async def visit_product_page(page, product):
                 
                 biomarkers = await get_product_biomarkers(page)
                 if biomarkers:
-                    logger.info(f"Successfully found {len(biomarkers)} biomarkers on attempt {attempt + 1}")
+                    logger.info(f"Successfully found biomarkers on attempt {attempt + 1}")
                     break
                 
                 logger.warning(f"No biomarkers found on attempt {attempt + 1}")
@@ -552,7 +590,17 @@ async def visit_product_page(page, product):
         product['biomarkers'] = biomarkers
         product['extraction_attempts'] = attempt + 1
         
-        if not biomarkers:
+        # Count biomarkers using the dedicated function
+        total_count, category_count = count_biomarkers(biomarkers)
+        product['biomarker_count'] = total_count
+        
+        if category_count:
+            product['category_count'] = category_count
+            logger.info(f"📊 Found {total_count} biomarkers across {category_count} categories")
+        else:
+            logger.info(f"📊 Found {total_count} biomarkers")
+            
+        if total_count == 0:
             logger.warning("⚠️ No biomarkers found after all attempts")
             product['error'] = "No biomarkers found after multiple attempts"
         else:
@@ -565,6 +613,7 @@ async def visit_product_page(page, product):
         logger.error(f"❌ Error processing product page: {e}", exc_info=True)
         product['price'] = None
         product['biomarkers'] = []
+        product['biomarker_count'] = 0
         product['error'] = str(e)
         return product
 

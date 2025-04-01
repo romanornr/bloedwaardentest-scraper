@@ -200,22 +200,101 @@ async def get_product_price(page):
         print(f"Error getting price: {e}")
         return None
 
-async def expand_read_more(page):
-    print("Checking for 'Lees meer' button...")
+async def expand_content_via_dom(page):
+    """
+    Directly manipulate the DOM to expand the content without relying on button clicks.
+    """
+    logger.info("🔧 Attempting content expansion via DOM manipulation")
     try:
+        expanded = await page.evaluate('''
+            () => {
+                // Find the toggle container
+                const container = document.querySelector('article.module-info-update.module-info.toggle.has-anchor');
+                if (!container) {
+                    console.log('Toggle container not found');
+                    return { success: false, message: 'Toggle container not found' };
+                }
+                
+                // Add the expanded class
+                container.classList.add('expanded');
+                console.log("Added 'expanded' class to container");
+                
+                // Set the style to display the content
+                const content = container.querySelector('.toggle-content');
+                if (content) {
+                    content.style.display = 'block';
+                    console.log("Set content display to 'block'");
+                } else {
+                    console.log('Toggle content not found');
+                }
+                
+                // Update the button if it exists
+                const button = document.querySelector('a.show-more');
+                if (button) {
+                    button.classList.add('active');
+                    button.textContent = button.textContent.replace('Lees meer', 'Lees minder');
+                    console.log("Updated button state");
+                } else {
+                    console.log('Show more button not found');
+                }
+                
+                return { 
+                    success: true, 
+                    message: 'DOM manipulation completed',
+                    containerModified: true,
+                    contentModified: !!content,
+                    buttonModified: !!button
+                };
+            }
+        ''')
+        
+        if expanded.get('success', False):
+            logger.info("✅ Content expanded successfully via DOM manipulation")
+            logger.debug(f"DOM manipulation details: {expanded}")
+            # Additional logging for specific DOM changes
+            if expanded.get('containerModified'):
+                logger.debug("Added 'expanded' class to container")
+            if expanded.get('contentModified'):
+                logger.debug("Set content display to 'block'")
+            if expanded.get('buttonModified'):
+                logger.debug("Updated button text and added 'active' class")
+            return True
+        else:
+            logger.warning(f"❌ Failed to expand content via DOM manipulation: {expanded.get('message', 'Unknown error')}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Error during DOM manipulation: {e}")
+        return False
+
+async def expand_read_more(page):
+    """
+    Try to expand the 'Read more' content using multiple methods.
+    """
+    logger.debug("Checking for 'Lees meer' button...")
+    try:
+        # First, try clicking the button normally
         show_more_button = await page.query_selector('a.show-more')
         if show_more_button:
-            print("Found 'Lees meer' button, expanding content...")
+            logger.info("🔍 Found 'Lees meer' button, attempting to expand content...")
             await show_more_button.click()
-            # Wait for the expanded state
-            await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
-                                      timeout=5000)
-            print("Content expanded successfully")
-            return True
-        print("No 'Lees meer' button found")
+            
+            # Try to wait for the expanded state
+            try:
+                await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
+                                        timeout=5000)
+                logger.info("✅ Content expanded successfully via button click")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ Button click didn't expand content: {e}")
+                
+                # Fallback: use DOM manipulation
+                return await expand_content_via_dom(page)
+        
+        logger.debug("No 'Lees meer' button found")
         return False
     except Exception as e:
-        print(f"Error expanding content: {e}")
+        logger.error(f"❌ Error expanding content: {e}")
         return False
 
 async def extract_biomarkers_from_content(page):

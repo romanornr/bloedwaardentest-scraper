@@ -1,5 +1,6 @@
 from playwright.async_api import async_playwright
 import asyncio
+from price_parser import Price
 
 
 async def get_products(page):
@@ -45,7 +46,7 @@ async def scrape_page(page, url):
     print(f"\nVisiting {url}...")
     await page.goto(url)
     
-    # Handle cookies using the new function
+    # Handle cookies on initial page load
     await handle_cookies(page)
     
     all_products = []
@@ -71,20 +72,61 @@ async def scrape_page(page, url):
         print(f"Found next page: {next_url}")
         current_url = next_url
         await page.goto(next_url)
+        
+        # Handle cookies after each page navigation
+        await handle_cookies(page)
+        
         page_num += 1
     
     print(f"Total products found: {len(all_products)}")
     return all_products
+
+def convert_price_to_number(price_text):
+    try:
+        # Use price-parser to handle the conversion
+        price = Price.fromstring(price_text)
+        if price.amount is not None:
+            return float(price.amount)
+        return None
+    except Exception as e:
+        print(f"Error converting price '{price_text}' to number: {e}")
+        return None
+
+async def get_product_price(page):
+    print("Getting product price...")
+    try:
+        price_element = await page.wait_for_selector('div.price-wrapper span.main-price')
+        if price_element:
+            price_text = await price_element.text_content()
+            price_text = price_text.strip()
+            price_number = convert_price_to_number(price_text)
+            print(f"Found price: {price_number}")
+            return price_number
+                
+        print("Price element not found")
+        return None
+    except Exception as e:
+        print(f"Error getting price: {e}")
+        return None
 
 async def visit_product_page(page, product):
     print(f"\nVisiting product: {product['name']}")
     print(f"URL: {product['link']}")
     
     await page.goto(product['link'])
-    # For now, we're just visiting the page without extracting any information
     await page.wait_for_load_state('networkidle')
     
+    # Handle cookies on product page
+    await handle_cookies(page)
+    
+    # Get the price using the new function
+    price = await get_product_price(page)
+    
+    # Add price to product data
+    product['price'] = price
+    
     print("Successfully loaded product page")
+    return product
 
 async def main():
     # URLs to scrape
@@ -110,10 +152,19 @@ async def main():
         
         # Then, visit each product page separately
         print("\nStarting to visit individual product pages...")
+        products_with_details = []
         for product in all_products:
-            await visit_product_page(page, product)
+            updated_product = await visit_product_page(page, product)
+            products_with_details.append(updated_product)
             # Add a small delay between requests to be nice to the server
             await asyncio.sleep(2)
+        
+        # Print all products with their prices
+        print("\nAll products with prices:")
+        for product in products_with_details:
+            print(f"Name: {product['name']}")
+            print(f"Price: {product['price']}")
+            print(f"URL: {product['link']}\n")
         
         print("\nFinished visiting all product pages")
         await browser.close()

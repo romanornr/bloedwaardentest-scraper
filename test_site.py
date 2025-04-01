@@ -271,84 +271,133 @@ async def visit_product_page(page, product):
         product['error'] = str(e)
         return product
 
-async def save_to_json(products, base_url):
-    # Create data directory if it doesn't exist
-    data_dir = Path('data')
-    data_dir.mkdir(exist_ok=True)
+async def save_product_realtime(product, base_url, filename='data/products.json'):
+    """
+    Save a single product to a single JSON file in real-time, creating or updating the file as needed.
+    """
+    try:
+        # Create data directory if it doesn't exist
+        data_dir = Path(filename).parent
+        data_dir.mkdir(exist_ok=True)
+        
+        # Initialize or load existing data
+        if Path(filename).exists():
+            with open(filename, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {
+                'scrape_timestamp': datetime.now().isoformat(),
+                'sources': {},
+                'total_products': 0,
+                'products': []
+            }
+        
+        # Update or add source URL info
+        if base_url not in data['sources']:
+            data['sources'][base_url] = {
+                'last_updated': datetime.now().isoformat(),
+                'product_count': 0
+            }
+        
+        # Add or update product
+        product_exists = False
+        for i, existing_product in enumerate(data['products']):
+            if existing_product['link'] == product['link']:
+                data['products'][i] = product
+                product_exists = True
+                break
+        
+        if not product_exists:
+            data['products'].append(product)
+            data['sources'][base_url]['product_count'] += 1
+        
+        # Update total count and timestamp
+        data['total_products'] = len(data['products'])
+        data['sources'][base_url]['last_updated'] = datetime.now().isoformat()
+        
+        # Save updated data
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        print(f"Saved/updated product '{product['name']}' to {filename}")
+        return filename
     
-    # Create filename with timestamp and base URL
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base_url_name = base_url.split('/')[-2]  # Get the last part of the URL
-    filename = data_dir / f'products_{base_url_name}_{timestamp}.json'
-    
-    # Prepare data for JSON serialization
-    output_data = {
-        'scrape_timestamp': datetime.now().isoformat(),
-        'source_url': base_url,
-        'total_products': len(products),
-        'products': products
-    }
-    
-    # Save to file with nice formatting
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
-    
-    print(f"\nData saved to: {filename}")
-    return filename
+    except Exception as e:
+        print(f"Error saving product '{product.get('name', 'unknown')}' to JSON: {e}")
+        return None
 
 async def main():
-    # URLs to scrape
     urls = [
         'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
-        # 'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/'
-        # 'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/'
-        # 'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/'
-        # 'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/'
+        # Add other URLs as needed
     ]
     
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=False)
-        page = await browser.new_page()
+        browser = await playwright.chromium.launch(
+            headless=False,
+            args=['--disable-dev-shm-usage']
+        )
         
-        for url in urls:
-            # First, collect all products from all pages
-            all_products = []
-            products = await scrape_page(page, url)
-            all_products.extend(products)
-            
-            print(f"\nTotal products found across all pages: {len(all_products)}")
-            
-            # Then, visit each product page separately
-            print("\nStarting to visit individual product pages...")
-            products_with_details = []
-            for product in all_products:
-                updated_product = await visit_product_page(page, product)
-                products_with_details.append(updated_product)
-                # Add a small delay between requests to be nice to the server
-                await asyncio.sleep(2)
-            
-            # Save the results to JSON
-            await save_to_json(products_with_details, url)
-            
-            # Print summary
-            print("\nAll products with details:")
-            for product in products_with_details:
-                print(f"Name: {product['name']}")
-                print(f"Price: {product['price']}")
-                print(f"URL: {product['link']}")
-                if product['biomarkers']:
-                    print("Biomarkers:")
-                    for marker in product['biomarkers']:
-                        if isinstance(marker, dict):
-                            print(f"\n{marker['category']}:")
-                            for biomarker in marker['markers']:
-                                print(f"  - {biomarker}")
-                        else:
-                            print(f"  - {marker}")
-                print()
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            bypass_csp=True,
+            ignore_https_errors=True
+        )
         
-        print("\nFinished visiting all product pages")
-        await browser.close()
+        page = await context.new_page()
+        page.set_default_timeout(60000)
+        page.set_default_navigation_timeout(60000)
+        
+        try:
+            for url in urls:
+                print(f"\nProcessing URL: {url}")
+                products = await scrape_page(page, url)
+                
+                if products:
+                    print(f"\nFound {len(products)} products, starting to visit individual pages...")
+                    
+                    for i, product in enumerate(products, 1):
+                        try:
+                            print(f"\nProcessing product {i}/{len(products)}: {product['name']}")
+                            
+                            # Add source URL to product data
+                            product['source_url'] = url
+                            
+                            # Get product details
+                            updated_product = await visit_product_page(page, product)
+                            
+                            # Save immediately after processing each product
+                            await save_product_realtime(updated_product, url)
+                            
+                            # Print summary of current product
+                            print(f"\nProduct details:")
+                            print(f"Name: {updated_product['name']}")
+                            print(f"Price: {updated_product['price']}")
+                            print(f"URL: {updated_product['link']}")
+                            if updated_product['biomarkers']:
+                                print("Biomarkers:")
+                                for marker in updated_product['biomarkers']:
+                                    if isinstance(marker, dict):
+                                        print(f"\n{marker['category']}:")
+                                        for biomarker in marker['markers']:
+                                            print(f"  - {biomarker}")
+                                    else:
+                                        print(f"  - {marker}")
+                            
+                            # Be nice to the server
+                            await asyncio.sleep(2)
+                            
+                        except Exception as e:
+                            print(f"Error processing product {product['name']}: {e}")
+                            continue
+                else:
+                    print(f"No products found for {url}")
+                
+        except Exception as e:
+            print(f"Error in main: {e}")
+        finally:
+            await browser.close()
 
 if __name__ == '__main__':
     asyncio.run(main()) 

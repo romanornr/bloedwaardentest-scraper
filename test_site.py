@@ -127,34 +127,104 @@ async def expand_read_more(page):
         print(f"Error expanding content: {e}")
         return False
 
+async def extract_biomarkers_from_content(page):
+    print("Extracting biomarkers with complex structure...")
+    try:
+        # First look for the biomarker header text to ensure we're in the right section
+        markers = await page.evaluate('''
+            () => {
+                // Helper function to clean text
+                const cleanText = (text) => text.replace(/\\s+/g, ' ').trim();
+                
+                // Find all strong elements that might be categories
+                const categories = Array.from(document.querySelectorAll('div.desc-wrapper li > strong'));
+                let biomarkers = [];
+                
+                for (const category of categories) {
+                    // Get the category name
+                    const categoryName = cleanText(category.textContent);
+                    
+                    // Find the closest ul that contains the actual markers
+                    const markerList = category.closest('li').querySelector('ul');
+                    if (markerList) {
+                        // Get all markers in this category
+                        const markers = Array.from(markerList.querySelectorAll('li'))
+                            .map(li => cleanText(li.textContent))
+                            .filter(text => text.length > 0);  // Filter out empty items
+                            
+                        if (markers.length > 0) {
+                            biomarkers.push({
+                                category: categoryName,
+                                markers: markers
+                            });
+                        }
+                    }
+                }
+                
+                return biomarkers;
+            }
+        ''')
+        
+        if markers:
+            print("\nFound categorized biomarkers:")
+            for category in markers:
+                print(f"\n{category['category']}:")
+                for marker in category['markers']:
+                    print(f"  - {marker}")
+            return markers
+            
+        print("No categorized biomarkers found")
+        return []
+        
+    except Exception as e:
+        print(f"Error extracting complex biomarkers: {e}")
+        return []
+
 async def get_product_biomarkers(page):
     print("Getting product biomarkers...")
     try:
         # First expand the content if needed
         await expand_read_more(page)
         
-        # Now get the biomarkers from the possibly expanded content
-        await page.wait_for_selector('div.desc-wrapper ul')
+        # Look for the biomarker indicator text
+        content_text = await page.evaluate('''
+            () => {
+                const wrapper = document.querySelector('div.desc-wrapper');
+                return wrapper ? wrapper.textContent : '';
+            }
+        ''')
         
-        biomarkers = await page.evaluate('''
+        # If we find text about biomarkers, use the complex extraction
+        if 'biomarkers' in content_text.lower() or 'gemeten worden' in content_text.lower():
+            return await extract_biomarkers_from_content(page)
+        
+        # Fallback to simple list extraction if no complex structure found
+        await page.wait_for_selector('div.desc-wrapper ul')
+        simple_markers = await page.evaluate('''
             () => {
                 const ul = document.querySelector('div.desc-wrapper ul');
                 if (!ul) return [];
                 
-                return Array.from(ul.querySelectorAll('li')).map(li => {
-                    return li.textContent.trim();
-                });
+                // Filter out instruction texts
+                const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload'];
+                
+                return Array.from(ul.querySelectorAll('li'))
+                    .map(li => li.textContent.trim())
+                    .filter(text => !excludeTexts.some(exclude => 
+                        text.toLowerCase().includes(exclude)
+                    ));
             }
         ''')
         
-        if biomarkers:
-            print(f"Found {len(biomarkers)} biomarkers")
-            for marker in biomarkers:
+        if simple_markers:
+            print(f"\nFound simple biomarkers:")
+            for marker in simple_markers:
                 print(f"- {marker}")
-            return biomarkers
+            return simple_markers
             
         print("No biomarkers found")
         return []
+        
     except Exception as e:
         print(f"Error getting biomarkers: {e}")
         return []

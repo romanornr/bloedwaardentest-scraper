@@ -95,7 +95,7 @@ def log_product_info(product):
     logger.info("└" + "─" * 65)
 
 async def get_products(page):
-    print("Getting products...")
+    logger.debug("Getting products...")
     await page.wait_for_selector('ul.list-collection li.data-product')
     products = await page.evaluate('''
         () => {
@@ -112,18 +112,18 @@ async def get_products(page):
     return products
 
 async def handle_cookies(page):
-    print("Checking for cookie consent dialog...")
+    logger.debug("Checking for cookie consent dialog...")
     try:
         cookie_button = await page.query_selector('button#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll')
         if cookie_button:
-            print("Cookie consent dialog found, accepting...")
+            logger.debug("Cookie consent dialog found, accepting...")
             await cookie_button.click(timeout=5000)
-            print("Cookies accepted successfully")
+            logger.debug("Cookies accepted successfully")
             return True
-        print("No cookie consent dialog found")
+        logger.debug("No cookie consent dialog found")
         return False
     except Exception as e:
-        print(f"Error handling cookies: {e}")
+        logger.warning(f"Error handling cookies: {e}")
         return False
 
 async def has_next_page(page):
@@ -134,7 +134,7 @@ async def has_next_page(page):
     return None
 
 async def scrape_page(page, url):
-    print(f"\nVisiting {url}...")
+    logger.info(f"Visiting {url}...")
     await page.goto(url)
     
     # Handle cookies on initial page load
@@ -147,20 +147,20 @@ async def scrape_page(page, url):
     while True:
         # Get products from current page
         products = await get_products(page)
-        print(f"\nFound products on page {page_num} at {current_url}:")
+        logger.info(f"Found {len(products)} products on page {page_num}")
+        logger.debug(f"Products on page {page_num} at {current_url}:")
         for i, product in enumerate(products, 1):
-            print(f"{i}. {product['name']}")
-            print(f"   Link: {product['link']}\n")
+            logger.debug(f"  {i}. {product['name']} - {product['link']}")
         
         all_products.extend(products)
         
         # Check for next page
         next_url = await has_next_page(page)
         if not next_url:
-            print("No more pages to scrape")
+            logger.debug("No more pages to scrape")
             break
             
-        print(f"Found next page: {next_url}")
+        logger.debug(f"Found next page: {next_url}")
         current_url = next_url
         await page.goto(next_url)
         
@@ -169,7 +169,7 @@ async def scrape_page(page, url):
         
         page_num += 1
     
-    print(f"Total products found: {len(all_products)}")
+    logger.info(f"Total products found: {len(all_products)}")
     return all_products
 
 def convert_price_to_number(price_text):
@@ -180,24 +180,24 @@ def convert_price_to_number(price_text):
             return float(price.amount)
         return None
     except Exception as e:
-        print(f"Error converting price '{price_text}' to number: {e}")
+        logger.warning(f"Error converting price '{price_text}' to number: {e}")
         return None
 
 async def get_product_price(page):
-    print("Getting product price...")
+    logger.debug("Getting product price...")
     try:
         price_element = await page.wait_for_selector('div.price-wrapper span.main-price')
         if price_element:
             price_text = await price_element.text_content()
             price_text = price_text.strip()
             price_number = convert_price_to_number(price_text)
-            print(f"Found price: {price_number}")
+            logger.debug(f"Found price: {price_number}")
             return price_number
                 
-        print("Price element not found")
+        logger.warning("Price element not found")
         return None
     except Exception as e:
-        print(f"Error getting price: {e}")
+        logger.warning(f"Error getting price: {e}")
         return None
 
 async def expand_content_via_dom(page):
@@ -298,7 +298,7 @@ async def expand_read_more(page):
         return False
 
 async def extract_biomarkers_from_content(page):
-    print("Extracting biomarkers with complex structure...")
+    logger.debug("Extracting biomarkers with complex structure...")
     try:
         # First look for the biomarker header text to ensure we're in the right section
         markers = await page.evaluate('''
@@ -336,22 +336,20 @@ async def extract_biomarkers_from_content(page):
         ''')
         
         if markers:
-            print("\nFound categorized biomarkers:")
+            logger.debug("Found categorized biomarkers:")
             for category in markers:
-                print(f"\n{category['category']}:")
-                for marker in category['markers']:
-                    print(f"  - {marker}")
+                logger.debug(f"  Category: {category['category']}, Markers: {len(category['markers'])}")
             return markers
             
-        print("No categorized biomarkers found")
+        logger.debug("No categorized biomarkers found")
         return []
         
     except Exception as e:
-        print(f"Error extracting complex biomarkers: {e}")
+        logger.warning(f"Error extracting complex biomarkers: {e}")
         return []
 
 async def get_product_biomarkers(page):
-    print("Getting product biomarkers...")
+    logger.debug("Getting product biomarkers...")
     try:
         # First expand the content if needed
         await expand_read_more(page)
@@ -387,16 +385,14 @@ async def get_product_biomarkers(page):
         ''')
         
         if simple_markers:
-            print(f"\nFound simple biomarkers:")
-            for marker in simple_markers:
-                print(f"- {marker}")
+            logger.debug(f"Found {len(simple_markers)} simple biomarkers")
             return simple_markers
             
-        print("No biomarkers found")
+        logger.debug("No biomarkers found")
         return []
         
     except Exception as e:
-        print(f"Error getting biomarkers: {e}")
+        logger.warning(f"Error getting biomarkers: {e}")
         return []
 
 async def try_load_page(page, url, max_retries=3):
@@ -559,11 +555,11 @@ async def save_product_realtime(product, base_url, filename='data/products.json'
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
-        print(f"Saved/updated product '{product['name']}' to {filename}")
+        logger.info(f"Saved product '{product['name']}' to {filename}")
         return filename
     
     except Exception as e:
-        print(f"Error saving product '{product.get('name', 'unknown')}' to JSON: {e}")
+        logger.error(f"Error saving product '{product.get('name', 'unknown')}' to JSON: {e}")
         return None
 
 async def main():
@@ -591,15 +587,15 @@ async def main():
         
         try:
             for url in urls:
-                print(f"\nProcessing URL: {url}")
+                log_section(f"Processing URL: {url}")
                 products = await scrape_page(page, url)
                 
                 if products:
-                    print(f"\nFound {len(products)} products, starting to visit individual pages...")
+                    logger.info(f"Starting to process {len(products)} product pages...")
                     
                     for i, product in enumerate(products, 1):
                         try:
-                            print(f"\nProcessing product {i}/{len(products)}: {product['name']}")
+                            logger.info(f"Processing product {i}/{len(products)}: {product['name']}")
                             
                             # Add source URL to product data
                             product['source_url'] = url
@@ -610,32 +606,17 @@ async def main():
                             # Save immediately after processing each product
                             await save_product_realtime(updated_product, url)
                             
-                            # Print summary of current product
-                            print(f"\nProduct details:")
-                            print(f"Name: {updated_product['name']}")
-                            print(f"Price: {updated_product['price']}")
-                            print(f"URL: {updated_product['link']}")
-                            if updated_product['biomarkers']:
-                                print("Biomarkers:")
-                                for marker in updated_product['biomarkers']:
-                                    if isinstance(marker, dict):
-                                        print(f"\n{marker['category']}:")
-                                        for biomarker in marker['markers']:
-                                            print(f"  - {biomarker}")
-                                    else:
-                                        print(f"  - {marker}")
-                            
                             # Be nice to the server
                             await asyncio.sleep(2)
                             
                         except Exception as e:
-                            print(f"Error processing product {product['name']}: {e}")
+                            logger.error(f"Error processing product {product['name']}: {e}")
                             continue
                 else:
-                    print(f"No products found for {url}")
+                    logger.warning(f"No products found for {url}")
                 
         except Exception as e:
-            print(f"Error in main: {e}")
+            logger.error(f"Error in main: {e}", exc_info=True)
         finally:
             await browser.close()
 

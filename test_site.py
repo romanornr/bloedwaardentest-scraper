@@ -109,21 +109,29 @@ async def get_product_price(page):
         print(f"Error getting price: {e}")
         return None
 
+async def expand_read_more(page):
+    print("Checking for 'Lees meer' button...")
+    try:
+        show_more_button = await page.query_selector('a.show-more')
+        if show_more_button:
+            print("Found 'Lees meer' button, expanding content...")
+            await show_more_button.click()
+            # Wait for the expanded state
+            await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
+                                      timeout=5000)
+            print("Content expanded successfully")
+            return True
+        print("No 'Lees meer' button found")
+        return False
+    except Exception as e:
+        print(f"Error expanding content: {e}")
+        return False
+
 async def get_product_biomarkers(page):
     print("Getting product biomarkers...")
     try:
-        # First check for and click the "Lees meer" button if it exists
-        try:
-            show_more_button = await page.query_selector('a.show-more')
-            if show_more_button:
-                print("Found 'Lees meer' button, expanding content...")
-                await show_more_button.click()
-                # Wait for the expanded state
-                await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
-                                          timeout=5000)
-                print("Content expanded successfully")
-        except Exception as e:
-            print(f"Note: No 'Lees meer' button found or error expanding: {e}")
+        # First expand the content if needed
+        await expand_read_more(page)
         
         # Now get the biomarkers from the possibly expanded content
         await page.wait_for_selector('div.desc-wrapper ul')
@@ -155,24 +163,40 @@ async def visit_product_page(page, product):
     print(f"\nVisiting product: {product['name']}")
     print(f"URL: {product['link']}")
     
-    await page.goto(product['link'])
-    await page.wait_for_load_state('networkidle')
-    
-    # Handle cookies on product page
-    await handle_cookies(page)
-    
-    # Get the price using the new function
-    price = await get_product_price(page)
-    
-    # Get biomarkers using the new function
-    biomarkers = await get_product_biomarkers(page)
-    
-    # Add data to product
-    product['price'] = price
-    product['biomarkers'] = biomarkers
-    
-    print("Successfully loaded product page")
-    return product
+    try:
+        # Navigate to the page
+        await page.goto(product['link'])
+        
+        # Try to wait for network idle, but don't fail if it times out
+        try:
+            await page.wait_for_load_state('networkidle', timeout=10000)  # 10 seconds timeout
+        except Exception as e:
+            print(f"Note: Page didn't reach network idle state: {e}")
+            # Wait a bit to let the page settle
+            await asyncio.sleep(2)
+        
+        # Handle cookies on product page
+        await handle_cookies(page)
+        
+        # Get the price using the new function
+        price = await get_product_price(page)
+        
+        # Get biomarkers using the new function
+        biomarkers = await get_product_biomarkers(page)
+        
+        # Add data to product
+        product['price'] = price
+        product['biomarkers'] = biomarkers
+        
+        print("Successfully loaded product page")
+        return product
+    except Exception as e:
+        print(f"Error processing product page: {e}")
+        # Return product with error information
+        product['price'] = None
+        product['biomarkers'] = []
+        product['error'] = str(e)
+        return product
 
 async def main():
     # URLs to scrape

@@ -1,6 +1,9 @@
 from playwright.async_api import async_playwright
 import asyncio
 from price_parser import Price
+import json
+from pathlib import Path
+from datetime import datetime
 
 
 async def get_products(page):
@@ -268,6 +271,31 @@ async def visit_product_page(page, product):
         product['error'] = str(e)
         return product
 
+async def save_to_json(products, base_url):
+    # Create data directory if it doesn't exist
+    data_dir = Path('data')
+    data_dir.mkdir(exist_ok=True)
+    
+    # Create filename with timestamp and base URL
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    base_url_name = base_url.split('/')[-2]  # Get the last part of the URL
+    filename = data_dir / f'products_{base_url_name}_{timestamp}.json'
+    
+    # Prepare data for JSON serialization
+    output_data = {
+        'scrape_timestamp': datetime.now().isoformat(),
+        'source_url': base_url,
+        'total_products': len(products),
+        'products': products
+    }
+    
+    # Save to file with nice formatting
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"\nData saved to: {filename}")
+    return filename
+
 async def main():
     # URLs to scrape
     urls = [
@@ -282,34 +310,42 @@ async def main():
         browser = await playwright.chromium.launch(headless=False)
         page = await browser.new_page()
         
-        # First, collect all products from all pages
-        all_products = []
         for url in urls:
+            # First, collect all products from all pages
+            all_products = []
             products = await scrape_page(page, url)
             all_products.extend(products)
-        
-        print(f"\nTotal products found across all pages: {len(all_products)}")
-        
-        # Then, visit each product page separately
-        print("\nStarting to visit individual product pages...")
-        products_with_details = []
-        for product in all_products:
-            updated_product = await visit_product_page(page, product)
-            products_with_details.append(updated_product)
-            # Add a small delay between requests to be nice to the server
-            await asyncio.sleep(2)
-        
-        # Print all products with their details
-        print("\nAll products with details:")
-        for product in products_with_details:
-            print(f"Name: {product['name']}")
-            print(f"Price: {product['price']}")
-            print(f"URL: {product['link']}")
-            if product['biomarkers']:
-                print("Biomarkers:")
-                for marker in product['biomarkers']:
-                    print(f"  - {marker}")
-            print()
+            
+            print(f"\nTotal products found across all pages: {len(all_products)}")
+            
+            # Then, visit each product page separately
+            print("\nStarting to visit individual product pages...")
+            products_with_details = []
+            for product in all_products:
+                updated_product = await visit_product_page(page, product)
+                products_with_details.append(updated_product)
+                # Add a small delay between requests to be nice to the server
+                await asyncio.sleep(2)
+            
+            # Save the results to JSON
+            await save_to_json(products_with_details, url)
+            
+            # Print summary
+            print("\nAll products with details:")
+            for product in products_with_details:
+                print(f"Name: {product['name']}")
+                print(f"Price: {product['price']}")
+                print(f"URL: {product['link']}")
+                if product['biomarkers']:
+                    print("Biomarkers:")
+                    for marker in product['biomarkers']:
+                        if isinstance(marker, dict):
+                            print(f"\n{marker['category']}:")
+                            for biomarker in marker['markers']:
+                                print(f"  - {biomarker}")
+                        else:
+                            print(f"  - {marker}")
+                print()
         
         print("\nFinished visiting all product pages")
         await browser.close()

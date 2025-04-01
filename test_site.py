@@ -269,29 +269,66 @@ async def expand_content_via_dom(page):
 
 async def expand_read_more(page):
     """
-    Try to expand the 'Read more' content using multiple methods.
+    Expand the 'Read more' content using direct DOM manipulation.
     """
-    logger.debug("Checking for 'Lees meer' button...")
+    logger.debug("Checking for expandable content...")
     try:
-        # First, try clicking the button normally
+        # Check if there's a 'Lees meer' button to indicate expandable content
         show_more_button = await page.query_selector('a.show-more')
         if show_more_button:
-            logger.info("🔍 Found 'Lees meer' button, attempting to expand content...")
-            await show_more_button.click()
+            logger.info("🔍 Found expandable content, performing DOM manipulation...")
             
-            # Try to wait for the expanded state
-            try:
-                await page.wait_for_selector('article.module-info-update.module-info.toggle.has-anchor.expanded', 
-                                        timeout=5000)
-                logger.info("✅ Content expanded successfully via button click")
+            # Use DOM manipulation to expand the content
+            expanded = await page.evaluate('''
+                () => {
+                    // Find the toggle container
+                    const container = document.querySelector('article.module-info-update.module-info.toggle.has-anchor');
+                    if (!container) {
+                        console.log('Toggle container not found');
+                        return { success: false, message: 'Toggle container not found' };
+                    }
+                    
+                    // Add the expanded class
+                    container.classList.add('expanded');
+                    console.log("Added 'expanded' class to container");
+                    
+                    // Set the style to display the content
+                    const content = container.querySelector('.toggle-content');
+                    if (content) {
+                        content.style.display = 'block';
+                        console.log("Set content display to 'block'");
+                    } else {
+                        console.log('Toggle content not found');
+                    }
+                    
+                    // Update the button if it exists
+                    const button = document.querySelector('a.show-more');
+                    if (button) {
+                        button.classList.add('active');
+                        button.textContent = button.textContent.replace('Lees meer', 'Lees minder');
+                        console.log("Updated button state");
+                    } else {
+                        console.log('Show more button not found');
+                    }
+                    
+                    return { 
+                        success: true, 
+                        message: 'DOM manipulation completed',
+                        containerModified: true,
+                        contentModified: !!content,
+                        buttonModified: !!button
+                    };
+                }
+            ''')
+            
+            if expanded.get('success', False):
+                logger.info("✅ Content expanded successfully via DOM manipulation")
                 return True
-            except Exception as e:
-                logger.warning(f"⚠️ Button click didn't expand content: {e}")
-                
-                # Fallback: use DOM manipulation
-                return await expand_content_via_dom(page)
+            else:
+                logger.warning(f"❌ Failed to expand content: {expanded.get('message', 'Unknown error')}")
+                return False
         
-        logger.debug("No 'Lees meer' button found")
+        logger.debug("No expandable content found")
         return False
     except Exception as e:
         logger.error(f"❌ Error expanding content: {e}")
@@ -446,12 +483,13 @@ async def visit_product_page(page, product):
         logger.debug("🍪 Handling cookies")
         await handle_cookies(page)
         
-        # Wait for main content to be available
+        # Either wait for price wrapper or description wrapper - both should be present on product pages
         try:
-            logger.debug("⌛ Waiting for main content")
-            await page.wait_for_selector('div.page-content', timeout=10000)
+            logger.debug("⌛ Waiting for product content")
+            await page.wait_for_selector('div.price-wrapper, div.desc-wrapper', timeout=10000)
+            logger.debug("✅ Product content found")
         except Exception as e:
-            logger.warning(f"⚠️ Main content not found: {e}")
+            logger.warning(f"⚠️ Product content not found: {e}")
         
         logger.debug("💰 Getting product price")
         price = await get_product_price(page)

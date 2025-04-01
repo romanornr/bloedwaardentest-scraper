@@ -320,141 +320,6 @@ async def get_product_biomarkers(page):
         print(f"Error getting biomarkers: {e}")
         return []
 
-async def handle_insidetracker_product(page, product):
-    """
-    Special handler for InsideTracker products which have a different structure.
-    """
-    print(f"\nHandling InsideTracker product: {product['name']}")
-    try:
-        # Navigate with longer timeout and different wait strategy
-        await page.goto(product['link'], timeout=90000, wait_until='domcontentloaded')
-        await asyncio.sleep(5)  # Give extra time for JS to load
-        
-        # Handle cookies first
-        await handle_cookies(page)
-        
-        # Get price
-        price = await get_product_price(page)
-        
-        # For InsideTracker products, we know they have specific biomarkers
-        # These are the standard biomarkers for InsideTracker Ultimate tests
-        biomarkers = [
-            {
-                "category": "Basis Biomarkers",
-                "markers": [
-                    "ApoB",
-                    "Cholesterol",
-                    "HDL",
-                    "LDL",
-                    "Triglyceriden",
-                    "Glucose",
-                    "HbA1c",
-                    "hsCRP",
-                    "ALT",
-                    "AST",
-                    "GGT",
-                    "Creatinine",
-                    "eGFR"
-                ]
-            },
-            {
-                "category": "Hormonen",
-                "markers": [
-                    "Cortisol",
-                    "DHEAS",
-                    "Free Testosterone",
-                    "SHBG",
-                    "Total Testosterone"
-                ]
-            },
-            {
-                "category": "Mineralen en Vitamines",
-                "markers": [
-                    "Ferritine",
-                    "Folaat",
-                    "IJzer",
-                    "Magnesium",
-                    "Vitamine B12",
-                    "Vitamine D"
-                ]
-            }
-        ]
-        
-        # Update product data
-        product['price'] = price
-        product['biomarkers'] = biomarkers
-        product['is_insidetracker'] = True
-        
-        print(f"Successfully processed InsideTracker product: {product['name']}")
-        return product
-        
-    except Exception as e:
-        print(f"Error processing InsideTracker product {product['name']}: {e}")
-        product['price'] = None
-        product['biomarkers'] = []
-        product['error'] = str(e)
-        product['is_insidetracker'] = True
-        return product
-
-async def handle_moe_product(page, product):
-    """
-    Special handler for Moe products which might have a different structure.
-    """
-    logger.info(f"Handling Moe product: {product['name']}")
-    try:
-        # Navigate with longer timeout and different wait strategy
-        logger.debug("Navigating to Moe product page")
-        await page.goto(
-            product['link'], 
-            timeout=90000, 
-            wait_until='domcontentloaded'
-        )
-        
-        logger.debug("Waiting additional time for JS load")
-        await asyncio.sleep(5)
-        
-        logger.debug("Handling cookies")
-        await handle_cookies(page)
-        
-        logger.debug("Getting product price")
-        price = await get_product_price(page)
-        logger.info(f"Found price: {price}")
-        
-        # Try multiple times to expand content and get biomarkers
-        max_attempts = 3
-        biomarkers = []
-        
-        for attempt in range(max_attempts):
-            logger.debug(f"Attempt {attempt + 1}/{max_attempts} to get biomarkers")
-            try:
-                await expand_read_more(page)
-                await asyncio.sleep(2)  # Wait for content to settle
-                biomarkers = await get_product_biomarkers(page)
-                if biomarkers:
-                    logger.info(f"Successfully found biomarkers on attempt {attempt + 1}")
-                    break
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(2)
-        
-        product['price'] = price
-        product['biomarkers'] = biomarkers
-        product['is_insidetracker'] = False
-        product['is_moe'] = True
-        
-        logger.info(f"Successfully processed Moe product: {product['name']}")
-        return product
-        
-    except Exception as e:
-        logger.error(f"Error processing Moe product {product['name']}: {e}", exc_info=True)
-        product['price'] = None
-        product['biomarkers'] = []
-        product['error'] = str(e)
-        product['is_insidetracker'] = False
-        product['is_moe'] = True
-        return product
-
 async def try_load_page(page, url, max_retries=3):
     """
     Attempt to load a page with multiple retry strategies
@@ -492,20 +357,10 @@ async def try_load_page(page, url, max_retries=3):
 
 async def visit_product_page(page, product):
     """
-    Visit a product page and extract its details, handling special cases.
+    Visit a product page and extract its details.
     """
     log_section(f"Processing Product: {product['name']}")
     logger.debug(f"Product URL: {product['link']}")
-    
-    # Check if this is an InsideTracker product
-    if 'insidetracker' in product['link'].lower() or 'insidetracker' in product['name'].lower():
-        logger.info("🔍 Detected InsideTracker product, using special handler")
-        return await handle_insidetracker_product(page, product)
-    
-    # Check if this is a "Moe" product
-    if 'moe' in product['link'].lower() or 'moe' in product['name'].lower():
-        logger.info("🔍 Detected Moe product, using special handler")
-        return await handle_moe_product(page, product)
     
     try:
         # Try to load the page with our robust loading strategy
@@ -528,15 +383,45 @@ async def visit_product_page(page, product):
         logger.info(f"Found price: {price}")
         
         logger.debug("🔬 Getting product biomarkers")
-        biomarkers = await get_product_biomarkers(page)
-        logger.info(f"Found {len(biomarkers)} biomarkers or categories")
+        # Try multiple times to get biomarkers
+        max_attempts = 3
+        biomarkers = []
         
+        for attempt in range(max_attempts):
+            try:
+                logger.debug(f"Attempt {attempt + 1}/{max_attempts} to get biomarkers")
+                
+                # First try expanding content
+                expanded = await expand_read_more(page)
+                if expanded:
+                    logger.debug("Content expanded successfully")
+                    await asyncio.sleep(2)  # Wait for content to settle
+                
+                biomarkers = await get_product_biomarkers(page)
+                if biomarkers:
+                    logger.info(f"Successfully found {len(biomarkers)} biomarkers on attempt {attempt + 1}")
+                    break
+                
+                logger.warning(f"No biomarkers found on attempt {attempt + 1}")
+                if attempt < max_attempts - 1:
+                    logger.debug("Waiting before next attempt...")
+                    await asyncio.sleep(3)
+            except Exception as e:
+                logger.warning(f"Error during biomarker extraction attempt {attempt + 1}: {e}")
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(3)
+        
+        # Update product data
         product['price'] = price
         product['biomarkers'] = biomarkers
-        product['is_insidetracker'] = False
-        product['is_moe'] = False
+        product['extraction_attempts'] = attempt + 1
         
-        logger.info("✅ Successfully processed product page")
+        if not biomarkers:
+            logger.warning("⚠️ No biomarkers found after all attempts")
+            product['error'] = "No biomarkers found after multiple attempts"
+        else:
+            logger.info("✅ Successfully processed product page")
+        
         log_product_info(product)
         return product
         
@@ -545,8 +430,6 @@ async def visit_product_page(page, product):
         product['price'] = None
         product['biomarkers'] = []
         product['error'] = str(e)
-        product['is_insidetracker'] = False
-        product['is_moe'] = False
         return product
 
 async def save_product_realtime(product, base_url, filename='data/products.json'):

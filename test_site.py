@@ -191,6 +191,12 @@ async def get_product_price(page):
             price_text = await price_element.text_content()
             price_text = price_text.strip()
             price_number = convert_price_to_number(price_text)
+            
+            # Check if price is zero or "0,-"
+            if price_number == 0 or price_text in ["0", "0,-", "€0", "€0,-"]:
+                logger.debug("Found zero price, marking as invalid")
+                return 0
+                
             logger.debug(f"Found price: {price_number}")
             return price_number
                 
@@ -391,21 +397,22 @@ async def get_product_biomarkers(page):
         # First expand the content if needed
         await expand_read_more(page)
         
-        # Look for the biomarker indicator text
-        content_text = await page.evaluate('''
-            () => {
-                const wrapper = document.querySelector('div.desc-wrapper');
-                return wrapper ? wrapper.textContent : '';
-            }
-        ''')
+        # PRIORITIZE: Check for ordered lists FIRST
+        logger.info("🔬 PRIORITY: Checking for biomarkers in ordered lists (<ol> tags)")
+        ordered_list_markers = await extract_biomarkers_from_ordered_list(page)
+        if ordered_list_markers:
+            logger.info(f"✅ SUCCESS: Found {len(ordered_list_markers)} biomarkers in ordered lists")
+            return ordered_list_markers
+            
+        # Only if no ordered lists found, try complex extraction
+        logger.debug("No ordered lists found, trying complex extraction...")
+        biomarkers = await extract_biomarkers_from_content(page)
+        if biomarkers:
+            logger.info("Found biomarkers using complex extraction")
+            return biomarkers
         
-        # If we find text about biomarkers, use the complex extraction
-        if 'biomarkers' in content_text.lower() or 'gemeten worden' in content_text.lower():
-            biomarkers = await extract_biomarkers_from_content(page)
-            if biomarkers:
-                return biomarkers
-                
-        # Fallback to simple list extraction if no complex structure found
+        # Try the unordered list extraction as last resort
+        logger.debug("Trying unordered list extraction as last resort...")
         try:
             await page.wait_for_selector('div.desc-wrapper ul', timeout=5000)
             simple_markers = await page.evaluate('''
@@ -414,7 +421,8 @@ async def get_product_biomarkers(page):
                     if (!ul) return [];
                     
                     // Filter out instruction texts
-                    const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload'];
+                    const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload', 
+                                          'laat je', 'ontvang je', 'plaats je', 'leg je', 'voer je'];
                     
                     return Array.from(ul.querySelectorAll('li'))
                         .map(li => li.textContent.trim())
@@ -429,11 +437,6 @@ async def get_product_biomarkers(page):
                 return simple_markers
         except Exception as e:
             logger.debug(f"No unordered lists found or error: {e}")
-        
-        # Try edge case: ordered lists
-        ordered_list_markers = await extract_biomarkers_from_ordered_list(page)
-        if ordered_list_markers:
-            return ordered_list_markers
             
         logger.debug("No biomarkers found with any extraction method")
         return []
@@ -505,6 +508,16 @@ async def visit_product_page(page, product):
         price = await get_product_price(page)
         logger.info(f"Found price: {price}")
         
+        # Skip products with zero price
+        if price == 0:
+            logger.info("⏩ Skipping product with zero price")
+            product['price'] = 0
+            product['biomarkers'] = []
+            product['skipped'] = True
+            product['reason'] = "Zero price product"
+            return product
+        
+        # Continue with biomarker extraction as before
         logger.debug("🔬 Getting product biomarkers")
         # Try multiple times to get biomarkers
         max_attempts = 3
@@ -638,16 +651,34 @@ async def extract_biomarkers_from_ordered_list(page):
                     const items = Array.from(ol.querySelectorAll('li'))
                         .map(li => cleanText(li.textContent))
                         .filter(text => {
-                            // Filter out instruction-like texts and empty items
-                            const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload', 'plaats je bestelling'];
+                            if (text.length === 0) return false;
+                            
+                            // Filter out instruction-like texts
+                            const excludeTexts = ['bestel', 'brievenbus', 'prikpunt', 'kortingscode', 'upload', 
+                                'plaats je bestelling', 'ontvang je', 'maak een dashboard'];
                             const isInstruction = excludeTexts.some(exclude => 
                                 text.toLowerCase().includes(exclude)
                             );
                             
-                            // Check if it's likely a biomarker by looking for keywords or patterns
-                            const possibleBiomarker = /[A-Z][a-z]+|[A-Z]{2,}|Vitamine|Glucose|Cholesterol/.test(text);
+                            if (isInstruction) return false;
                             
-                            return text.length > 0 && !isInstruction && possibleBiomarker;
+                            // First check for common biomarker patterns that we're sure about
+                            if (/Vitamine|Calcium|Glucose|Cholesterol|Albumine|Ferritine|Kalium|Natrium|Foliumzuur|Transferrine|Testosteron|Globulin|Cortisol|Creatine|Hemoglobine|IJzer/.test(text)) {
+                                return true;
+                            }
+                            
+                            // Check if text contains parentheses with abbreviations, common in biomarkers
+                            if (/\([A-Z]{2,}[\)\s-]/.test(text)) {
+                                return true;
+                            }
+                            
+                            // Check for capitalized words that might be biomarkers (most biomarkers start with capitals)
+                            if (/^[A-Z][a-z]+/.test(text)) {
+                                return true;
+                            }
+                            
+                            // As a last resort, check if it's likely a biomarker by looking for medical terms
+                            return !/^[a-z]/.test(text); // Not starting with lowercase (most instructions do)
                         });
                     
                     if (items.length > 0) {
@@ -674,7 +705,13 @@ async def extract_biomarkers_from_ordered_list(page):
 
 async def main():
     urls = [
-        'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/bioleeftijd/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/insidetracker/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/hormonen-mannen/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/',
+        #'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/',
         # Add other URLs as needed
     ]
     
@@ -713,8 +750,11 @@ async def main():
                             # Get product details
                             updated_product = await visit_product_page(page, product)
                             
-                            # Save immediately after processing each product
-                            await save_product_realtime(updated_product, url)
+                            # Only save if not skipped or if you want to save skipped products too
+                            if not updated_product.get('skipped', False):
+                                await save_product_realtime(updated_product, url)
+                            else:
+                                logger.info(f"Not saving skipped product: {updated_product['name']}")
                             
                             # Be nice to the server
                             await asyncio.sleep(2)

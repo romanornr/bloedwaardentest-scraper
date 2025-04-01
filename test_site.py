@@ -455,6 +455,41 @@ async def handle_moe_product(page, product):
         product['is_moe'] = True
         return product
 
+async def try_load_page(page, url, max_retries=3):
+    """
+    Attempt to load a page with multiple retry strategies
+    """
+    logger.debug(f"Attempting to load page: {url}")
+    
+    strategies = [
+        {'wait_until': 'domcontentloaded', 'timeout': 30000},
+        {'wait_until': 'load', 'timeout': 60000},
+        {'wait_until': 'networkidle', 'timeout': 90000}
+    ]
+    
+    for attempt in range(max_retries):
+        for strategy in strategies:
+            try:
+                logger.debug(f"Attempt {attempt + 1}/{max_retries} using {strategy['wait_until']} strategy")
+                await page.goto(
+                    url,
+                    timeout=strategy['timeout'],
+                    wait_until=strategy['wait_until']
+                )
+                logger.info(f"✅ Successfully loaded page using {strategy['wait_until']} strategy")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ Failed with {strategy['wait_until']} strategy: {str(e)}")
+                continue
+        
+        if attempt < max_retries - 1:
+            wait_time = (attempt + 1) * 5  # Increasing wait time between attempts
+            logger.info(f"⏳ Waiting {wait_time} seconds before next attempt...")
+            await asyncio.sleep(wait_time)
+    
+    logger.error("❌ Failed to load page with all strategies")
+    return False
+
 async def visit_product_page(page, product):
     """
     Visit a product page and extract its details, handling special cases.
@@ -473,19 +508,20 @@ async def visit_product_page(page, product):
         return await handle_moe_product(page, product)
     
     try:
-        logger.debug("→ Navigating to product page")
-        await page.goto(product['link'])
-        
-        try:
-            logger.debug("⌛ Waiting for network idle")
-            await page.wait_for_load_state('networkidle', timeout=10000)
-        except Exception as e:
-            logger.warning(f"⚠️  Network didn't become idle: {e}")
-            logger.info("⏳ Waiting additional 2 seconds for page to settle")
-            await asyncio.sleep(2)
+        # Try to load the page with our robust loading strategy
+        page_loaded = await try_load_page(page, product['link'])
+        if not page_loaded:
+            raise Exception("Failed to load page after multiple attempts")
         
         logger.debug("🍪 Handling cookies")
         await handle_cookies(page)
+        
+        # Wait for main content to be available
+        try:
+            logger.debug("⌛ Waiting for main content")
+            await page.wait_for_selector('div.page-content', timeout=10000)
+        except Exception as e:
+            logger.warning(f"⚠️ Main content not found: {e}")
         
         logger.debug("💰 Getting product price")
         price = await get_product_price(page)

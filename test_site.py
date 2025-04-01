@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 from datetime import datetime
 import logging
+from colorlog import ColoredFormatter
 
 def setup_logger(name='scraper', log_file='data/scraper.log'):
     """
-    Set up a logger that writes to both file and console with timestamps
+    Set up a logger with colored output for console and detailed logging for file
     """
     # Create data directory if it doesn't exist
     log_dir = Path(log_file).parent
@@ -21,34 +22,77 @@ def setup_logger(name='scraper', log_file='data/scraper.log'):
     # Remove existing handlers to avoid duplicates
     logger.handlers = []
     
-    # Create formatters
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    
-    # Create file handler
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(file_formatter)
-    
-    # Create console handler
+    # Console handler with colors
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
+    
+    # Color scheme for different log levels
+    console_colors = {
+        'DEBUG':    'cyan',
+        'INFO':     'green',
+        'WARNING':  'yellow',
+        'ERROR':    'red',
+        'CRITICAL': 'red,bg_white',
+    }
+    
+    # Console formatter with colors
+    console_formatter = ColoredFormatter(
+        "%(log_color)s%(asctime)s │ %(message)s",
+        datefmt="%H:%M:%S",
+        log_colors=console_colors,
+        reset=True,
+        style='%'
+    )
     console_handler.setFormatter(console_formatter)
     
+    # File handler with detailed formatting
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        "%(asctime)s │ %(levelname)-8s │ %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler.setFormatter(file_formatter)
+    
     # Add handlers to logger
-    logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
     
     return logger
 
 # Create global logger instance
 logger = setup_logger()
+
+def log_section(title, char='─'):
+    """
+    Create a visually distinct section in the logs
+    """
+    width = 80
+    padding = (width - len(title) - 2) // 2
+    logger.info(char * width)
+    logger.info(f"{char * padding} {title} {char * padding}")
+    logger.info(char * width)
+
+def log_product_info(product):
+    """
+    Log product information in a structured format
+    """
+    logger.info("┌─ Product Details " + "─" * 50)
+    logger.info(f"│ Name: {product['name']}")
+    logger.info(f"│ Price: {product['price']}")
+    logger.info(f"│ URL: {product['link']}")
+    
+    if product.get('biomarkers'):
+        logger.info("│")
+        logger.info("│ Biomarkers:")
+        for marker in product['biomarkers']:
+            if isinstance(marker, dict):
+                logger.info(f"│   {marker['category']}:")
+                for biomarker in marker['markers']:
+                    logger.info(f"│     • {biomarker}")
+            else:
+                logger.info(f"│     • {marker}")
+    logger.info("└" + "─" * 65)
 
 async def get_products(page):
     print("Getting products...")
@@ -415,40 +459,39 @@ async def visit_product_page(page, product):
     """
     Visit a product page and extract its details, handling special cases.
     """
-    logger.info(f"Starting to visit product: {product['name']}")
-    logger.info(f"Product URL: {product['link']}")
+    log_section(f"Processing Product: {product['name']}")
+    logger.debug(f"Product URL: {product['link']}")
     
     # Check if this is an InsideTracker product
     if 'insidetracker' in product['link'].lower() or 'insidetracker' in product['name'].lower():
-        logger.info("Detected InsideTracker product, using special handler")
+        logger.info("🔍 Detected InsideTracker product, using special handler")
         return await handle_insidetracker_product(page, product)
     
     # Check if this is a "Moe" product
     if 'moe' in product['link'].lower() or 'moe' in product['name'].lower():
-        logger.info("Detected Moe product, using special handler")
+        logger.info("🔍 Detected Moe product, using special handler")
         return await handle_moe_product(page, product)
     
-    # Regular product handling
     try:
-        logger.debug("Attempting to navigate to product page")
+        logger.debug("→ Navigating to product page")
         await page.goto(product['link'])
         
         try:
-            logger.debug("Waiting for network idle")
+            logger.debug("⌛ Waiting for network idle")
             await page.wait_for_load_state('networkidle', timeout=10000)
         except Exception as e:
-            logger.warning(f"Network didn't become idle: {e}")
-            logger.info("Waiting additional 2 seconds for page to settle")
+            logger.warning(f"⚠️  Network didn't become idle: {e}")
+            logger.info("⏳ Waiting additional 2 seconds for page to settle")
             await asyncio.sleep(2)
         
-        logger.debug("Handling cookies")
+        logger.debug("🍪 Handling cookies")
         await handle_cookies(page)
         
-        logger.debug("Getting product price")
+        logger.debug("💰 Getting product price")
         price = await get_product_price(page)
         logger.info(f"Found price: {price}")
         
-        logger.debug("Getting product biomarkers")
+        logger.debug("🔬 Getting product biomarkers")
         biomarkers = await get_product_biomarkers(page)
         logger.info(f"Found {len(biomarkers)} biomarkers or categories")
         
@@ -457,11 +500,12 @@ async def visit_product_page(page, product):
         product['is_insidetracker'] = False
         product['is_moe'] = False
         
-        logger.info("Successfully processed product page")
+        logger.info("✅ Successfully processed product page")
+        log_product_info(product)
         return product
         
     except Exception as e:
-        logger.error(f"Error processing product page: {e}", exc_info=True)
+        logger.error(f"❌ Error processing product page: {e}", exc_info=True)
         product['price'] = None
         product['biomarkers'] = []
         product['error'] = str(e)

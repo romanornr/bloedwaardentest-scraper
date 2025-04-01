@@ -76,30 +76,46 @@ async def scrape_page(page, url):
     print(f"Total products found: {len(all_products)}")
     return all_products
 
+async def visit_product_page(page, product):
+    print(f"\nVisiting product: {product['name']}")
+    print(f"URL: {product['link']}")
+    
+    await page.goto(product['link'])
+    # For now, we're just visiting the page without extracting any information
+    await page.wait_for_load_state('networkidle')
+    
+    print("Successfully loaded product page")
+
 async def main():
     # URLs to scrape
     urls = [
         'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
-        'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/'
-        'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/'
-        'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/'
-        'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/'
+        # 'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/'
+        # 'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/'
+        # 'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/'
+        # 'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/'
     ]
     
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=False)
         page = await browser.new_page()
         
+        # First, collect all products from all pages
         all_products = []
-        # Scrape each URL
         for url in urls:
             products = await scrape_page(page, url)
             all_products.extend(products)
         
         print(f"\nTotal products found across all pages: {len(all_products)}")
-        print("\nWaiting for 10 seconds...")
-        await asyncio.sleep(10)
         
+        # Then, visit each product page separately
+        print("\nStarting to visit individual product pages...")
+        for product in all_products:
+            await visit_product_page(page, product)
+            # Add a small delay between requests to be nice to the server
+            await asyncio.sleep(2)
+        
+        print("\nFinished visiting all product pages")
         await browser.close()
 
 if __name__ == '__main__':

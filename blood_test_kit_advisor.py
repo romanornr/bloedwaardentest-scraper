@@ -148,8 +148,8 @@ class BloodTestKitAdvisor:
         
         When providing recommendations:
         1. Consider the user's specific health concerns or goals if provided
-        2. Evaluate cost-effectiveness (biomarkers per euro)
-        3. Consider comprehensive coverage of important health markers
+        2. Evaluate cost-effectiveness, recognizing that not all biomarkers have equal importance despite the calculated cost_per_biomarker
+        3. Consider comprehensive coverage of important health markers, prioritizing clinically significant biomarkers
         4. Provide clear, evidence-based explanations for your recommendations
         
         You can delegate numerical analysis tasks to OpenAI and biomarker categorization to Gemini.
@@ -161,10 +161,11 @@ class BloodTestKitAdvisor:
         Your role is to analyze blood test packages quantitatively and provide structured comparisons.
         
         When performing analysis:
-        1. Calculate cost per biomarker for each package
-        2. Identify overlaps and unique biomarkers between packages
-        3. Find optimal combinations for complete biomarker coverage
-        4. Present data in a structured, quantitative format
+        1. Use the provided cost_per_biomarker to analyze cost-effectiveness
+        2. Note that raw cost_per_biomarker may be misleading as not all biomarkers have equal importance
+        3. Identify overlaps and unique biomarkers between packages
+        4. Find optimal combinations for complete biomarker coverage
+        5. Present data in a structured, quantitative format
         
         Respond with clear numerical analysis and data-driven insights.
         """
@@ -347,7 +348,7 @@ class BloodTestKitAdvisor:
             {"role": "system", "content": self.openai_system_prompt},
             {"role": "user", "content": f"""
             Analyze the cost-effectiveness of these blood test packages.
-            Calculate the price per biomarker for each package and rank them from most to least cost-effective.
+            Use the pre-calculated cost_per_biomarker value to rank packages from most to least cost-effective.
             Also identify any packages that provide unique biomarkers not available in other packages.
             
             Product data:

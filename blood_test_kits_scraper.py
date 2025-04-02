@@ -80,6 +80,8 @@ def log_product_info(product):
     logger.info("┌─ Product Details " + "─" * 50)
     logger.info(f"│ Name: {product['name']}")
     logger.info(f"│ Price: {product['price']}")
+    if 'cost_per_biomarker' in product and product['cost_per_biomarker'] is not None:
+        logger.info(f"│ Cost per biomarker: €{product['cost_per_biomarker']:.2f}")
     logger.info(f"│ URL: {product['link']}")
     
     # Display biomarker count information
@@ -517,6 +519,32 @@ def count_biomarkers(biomarkers):
     
     return total_count, category_count
 
+def calculate_cost_per_biomarker(price, biomarker_count):
+    """
+    Calculate the cost per biomarker.
+    
+    Args:
+        price (float): The price of the product
+        biomarker_count (int): The number of biomarkers in the product
+        
+    Returns:
+        float or None: The cost per biomarker, or None if calculation is not possible
+    """
+    try:
+        # Check if we have valid inputs for calculation
+        if price is None or price <= 0 or biomarker_count is None or biomarker_count <= 0:
+            logger.debug("Cannot calculate cost per biomarker - invalid inputs")
+            return None
+            
+        # Calculate cost per biomarker
+        cost_per_marker = price / biomarker_count
+        logger.debug(f"Calculated cost per biomarker: {cost_per_marker:.2f}")
+        return round(cost_per_marker, 2)  # Round to 2 decimal places for cleaner display
+        
+    except Exception as e:
+        logger.warning(f"Error calculating cost per biomarker: {e}")
+        return None
+
 async def visit_product_page(page, product):
     """
     Visit a product page and extract its details.
@@ -605,6 +633,14 @@ async def visit_product_page(page, product):
             product['error'] = "No biomarkers found after multiple attempts"
         else:
             logger.info("✅ Successfully processed product page")
+        
+        # Calculate cost per biomarker
+        if total_count > 0 and price is not None and price > 0:
+            cost_per_biomarker = calculate_cost_per_biomarker(price, total_count)
+            product['cost_per_biomarker'] = cost_per_biomarker
+            logger.info(f"💶 Cost per biomarker: €{cost_per_biomarker:.2f}")
+        else:
+            product['cost_per_biomarker'] = None
         
         log_product_info(product)
         return product
@@ -754,7 +790,7 @@ async def extract_biomarkers_from_ordered_list(page):
 
 async def main():
     urls = [
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
         #'https://www.bloedwaardentest.nl/bloedonderzoek/bioleeftijd/',
         #'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/',
         'https://www.bloedwaardentest.nl/bloedonderzoek/insidetracker/',

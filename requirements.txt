@@ -1,6 +1,13 @@
 python-dotenv>=1.1.0
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.16
 langchain-openai>=0.3.11
+langchain-anthropic>=0.1.0
+langchain-google-genai>=0.1.0
 pydantic>=2.11.1
 browser-use>=0.1.4
 playwright>=1.5.1
 asyncio>=3.4.3
+colorlog>=6.9.0
+price-parser>=0.4.0

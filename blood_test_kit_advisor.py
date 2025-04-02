@@ -11,6 +11,9 @@ import logging
 from colorlog import ColoredFormatter
 import redis_cache
 import argparse
+import re
+import sys
+import redis
 
 # Environment variables should be loaded by the calling script
 # This ensures we don't have duplicate loading or timing issues
@@ -394,6 +397,110 @@ class BloodTestKitAdvisor:
         response = await self.openai_query(messages)
         return response
     
+    async def analyze_cost_effectiveness_structured(self) -> dict:
+        """
+        Use OpenAI to analyze the cost-effectiveness of packages with structured JSON output.
+        Uses Redis cache when available.
+        
+        Returns:
+            JSON structured analysis of cost per biomarker for each package
+        """
+        if not self.use_cache:
+            # Implementation without caching
+            return await self._analyze_cost_effectiveness_structured_uncached()
+        
+        # Use cached_or_compute to handle caching
+        async def compute_analysis():
+            result = await self._analyze_cost_effectiveness_structured_uncached()
+            # Convert to JSON string for caching
+            return json.dumps(result)
+        
+        result = await redis_cache.cached_or_compute(
+            "cost_analysis_structured", 
+            self.products["products"], 
+            compute_analysis
+        )
+        
+        # Convert JSON string back to dict
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                logger.warning("Error parsing cached JSON result, recomputing")
+                return await self._analyze_cost_effectiveness_structured_uncached()
+        
+        return result
+    
+    async def _analyze_cost_effectiveness_structured_uncached(self) -> dict:
+        """Implementation for structured JSON output without caching"""
+        products_json = json.dumps(self.products["products"], indent=2)
+        
+        messages = [
+            {"role": "system", "content": self.openai_system_prompt + """
+            IMPORTANT: You must respond with a valid JSON object containing your analysis.
+            The JSON structure should be:
+            {
+                "cost_effectiveness_ranking": [
+                    {"package_name": "Name", "cost_per_biomarker": 0.00, "ranking": 1, "notes": "..."}
+                ],
+                "unique_biomarkers": [
+                    {"package_name": "Name", "unique_biomarkers": ["marker1", "marker2"]}
+                ],
+                "summary": "Brief text summary of the analysis"
+            }
+            """
+            },
+            {"role": "user", "content": f"""
+            Analyze the cost-effectiveness of these blood test packages.
+            Use the pre-calculated cost_per_biomarker value to rank packages from most to least cost-effective.
+            Also identify any packages that provide unique biomarkers not available in other packages.
+            
+            Product data:
+            {products_json}
+            
+            Respond ONLY with a valid JSON object structured exactly as specified in the system prompt.
+            """
+            }
+        ]
+        
+        response = await self.openai_query(messages)
+        
+        # Parse the JSON response with more robust error handling
+        try:
+            # Extract JSON if it's wrapped in markdown code blocks
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            else:
+                json_str = response.strip()
+            
+            # Fix common JSON formatting issues
+            json_str = self._fix_json_formatting(json_str)
+            
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse OpenAI response as JSON: %s", e)
+            logger.warning("Falling back to unstructured response")
+            # Return a structured dict with the text in the summary field as fallback
+            return {
+                "cost_effectiveness_ranking": [],
+                "unique_biomarkers": [],
+                "summary": response,
+                "parsing_error": str(e)
+            }
+    
+    def _fix_json_formatting(self, json_str: str) -> str:
+        """Fix common JSON formatting issues like trailing commas"""
+        # Remove trailing commas before closing brackets or braces
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*\]', ']', json_str)
+        
+        # Fix any missing quotes around keys (basic fix)
+        json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
+        
+        return json_str
+    
     async def categorize_biomarkers(self) -> str:
         """
         Use Gemini to categorize biomarkers by health function.
@@ -465,6 +572,116 @@ class BloodTestKitAdvisor:
         unique_biomarkers = self._extract_unique_biomarkers()
         return await self._categorize_biomarkers_with_biomarkers(unique_biomarkers)
     
+    async def categorize_biomarkers_structured(self) -> dict:
+        """
+        Use Gemini to categorize biomarkers by health function with structured JSON output.
+        Uses Redis cache when available.
+        
+        Returns:
+            JSON structured categorization of biomarkers
+        """
+        if not self.use_cache:
+            # Implementation without caching
+            return await self._categorize_biomarkers_structured_uncached()
+        
+        # Extract all unique biomarkers
+        all_biomarkers = self._extract_unique_biomarkers()
+        
+        # Use cached_or_compute to handle caching
+        async def compute_categorization():
+            result = await self._categorize_biomarkers_structured_with_biomarkers(all_biomarkers)
+            # Convert to JSON string for caching
+            return json.dumps(result)
+        
+        result = await redis_cache.cached_or_compute(
+            "biomarker_categories_structured", 
+            all_biomarkers, 
+            compute_categorization
+        )
+        
+        # Convert JSON string back to dict
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                logger.warning("Error parsing cached JSON result, recomputing")
+                return await self._categorize_biomarkers_structured_with_biomarkers(all_biomarkers)
+        
+        return result
+    
+    async def _categorize_biomarkers_structured_uncached(self) -> dict:
+        """Implementation for structured JSON categorization without caching"""
+        unique_biomarkers = self._extract_unique_biomarkers()
+        return await self._categorize_biomarkers_structured_with_biomarkers(unique_biomarkers)
+    
+    async def _categorize_biomarkers_structured_with_biomarkers(self, unique_biomarkers: list) -> dict:
+        """Categorize the given list of biomarkers with structured JSON output"""
+        biomarkers_json = json.dumps(unique_biomarkers, indent=2)
+        
+        messages = [
+            {"role": "system", "content": self.gemini_system_prompt + """
+            IMPORTANT: You must respond with a valid JSON object containing your categorization.
+            The JSON structure should be:
+            {
+                "categories": [
+                    {
+                        "name": "Category Name",
+                        "description": "Brief description of this health category",
+                        "biomarkers": [
+                            {
+                                "name": "Biomarker Name",
+                                "description": "What this biomarker measures",
+                                "significance": "Clinical significance of this biomarker",
+                                "importance_level": "high/medium/low"
+                            }
+                        ]
+                    }
+                ],
+                "important_general_health_markers": ["marker1", "marker2"],
+                "summary": "Brief text summary of the categorization"
+            }
+            """
+            },
+            {"role": "user", "content": f"""
+            Categorize these biomarkers by health function (cardiovascular, metabolic, hormonal, etc.).
+            Provide a brief explanation of what each biomarker measures and its significance.
+            Identify which biomarkers are most important for general health monitoring.
+            
+            Biomarkers:
+            {biomarkers_json}
+            
+            Respond ONLY with a valid JSON object structured exactly as specified in the system prompt.
+            """
+            }
+        ]
+        
+        response = await self.gemini_query(messages)
+        
+        # Apply the same fix to this function's JSON parsing section
+        try:
+            # Extract JSON if it's wrapped in markdown code blocks
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            else:
+                json_str = response.strip()
+            
+            # Fix common JSON formatting issues
+            json_str = self._fix_json_formatting(json_str)
+            
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse Gemini response as JSON: %s", e)
+            logger.warning("Falling back to unstructured response")
+            # Return fallback structure
+            return {
+                "categories": [],
+                "important_general_health_markers": [],
+                "summary": response,
+                "parsing_error": str(e)
+            }
+    
     def clear_cache(self, cache_type: str = None):
         """
         Clear the Redis cache.
@@ -484,51 +701,88 @@ class BloodTestKitAdvisor:
             redis_cache.invalidate_cache()
             logger.info("Cleared all cache entries")
     
-    async def recommend_packages(self, query: str) -> str:
+    async def recommend_packages(self, query: str, use_structured_output: bool = True) -> str:
         """
         Process a user query and provide package recommendations.
         
         Args:
             query: User query about blood test package selection
+            use_structured_output: Whether to use structured JSON outputs from Gemini and OpenAI
             
         Returns:
             Claude's recommendation based on inputs from all agents
         """
         try:
-            # Get cost-effectiveness analysis from OpenAI
-            logger.info("Getting cost-effectiveness analysis from OpenAI (or fallback)")
-            cost_analysis = await self.analyze_cost_effectiveness()
-            
-            # Get biomarker categorization from Gemini
-            logger.info("Getting biomarker categorization from Gemini (or fallback)")
-            biomarker_categories = await self.categorize_biomarkers()
-            
-            # Combine all information and use Claude for final recommendation
-            logger.info("Generating final recommendation with Claude")
-            products_json = json.dumps(self.products["products"], indent=2)
-            
-            messages = [
-                {"role": "system", "content": self.claude_system_prompt},
-                {"role": "user", "content": f"""
-                I need a recommendation for blood test packages based on this query:
-                "{query}"
+            if use_structured_output:
+                # Get structured outputs from OpenAI and Gemini
+                logger.info("Getting structured cost-effectiveness analysis from OpenAI (or fallback)")
+                cost_analysis_structured = await self.analyze_cost_effectiveness_structured()
                 
-                Here is the data to consider:
+                logger.info("Getting structured biomarker categorization from Gemini (or fallback)")
+                biomarker_categories_structured = await self.categorize_biomarkers_structured()
                 
-                1. Available blood test packages:
-                {products_json}
+                logger.info("Generating final recommendation with Claude using structured inputs")
+                products_json = json.dumps(self.products["products"], indent=2)
                 
-                2. Cost-effectiveness analysis:
-                {cost_analysis}
+                # Convert structured data to string representations for Claude
+                cost_analysis_json = json.dumps(cost_analysis_structured, indent=2)
+                biomarker_categories_json = json.dumps(biomarker_categories_structured, indent=2)
                 
-                3. Biomarker categorization:
-                {biomarker_categories}
+                messages = [
+                    {"role": "system", "content": self.claude_system_prompt},
+                    {"role": "user", "content": f"""
+                    I need a recommendation for blood test packages based on this query:
+                    "{query}"
+                    
+                    Here is the data to consider:
+                    
+                    1. Available blood test packages:
+                    {products_json}
+                    
+                    2. Cost-effectiveness analysis (JSON structured):
+                    {cost_analysis_json}
+                    
+                    3. Biomarker categorization (JSON structured):
+                    {biomarker_categories_json}
+                    
+                    Based on all this information, what blood test package(s) would you recommend for this query?
+                    Explain your reasoning considering biomarker coverage, cost-effectiveness, and relevance to the query.
+                    """
+                    }
+                ]
+            else:
+                # Get unstructured outputs from OpenAI and Gemini (original implementation)
+                logger.info("Getting unstructured cost-effectiveness analysis from OpenAI (or fallback)")
+                cost_analysis = await self.analyze_cost_effectiveness()
                 
-                Based on all this information, what blood test package(s) would you recommend for this query?
-                Explain your reasoning considering biomarker coverage, cost-effectiveness, and relevance to the query.
-                """
-                }
-            ]
+                logger.info("Getting unstructured biomarker categorization from Gemini (or fallback)")
+                biomarker_categories = await self.categorize_biomarkers()
+                
+                logger.info("Generating final recommendation with Claude using unstructured inputs")
+                products_json = json.dumps(self.products["products"], indent=2)
+                
+                messages = [
+                    {"role": "system", "content": self.claude_system_prompt},
+                    {"role": "user", "content": f"""
+                    I need a recommendation for blood test packages based on this query:
+                    "{query}"
+                    
+                    Here is the data to consider:
+                    
+                    1. Available blood test packages:
+                    {products_json}
+                    
+                    2. Cost-effectiveness analysis:
+                    {cost_analysis}
+                    
+                    3. Biomarker categorization:
+                    {biomarker_categories}
+                    
+                    Based on all this information, what blood test package(s) would you recommend for this query?
+                    Explain your reasoning considering biomarker coverage, cost-effectiveness, and relevance to the query.
+                    """
+                    }
+                ]
             
             response = await self.claude_query(messages)
             return response
@@ -745,6 +999,21 @@ async def check_model_availability():
         
     return results
 
+def check_redis_connection():
+    """Check if Redis connection is working properly"""
+    try:
+        import redis_cache
+        is_connected = redis_cache.test_connection()
+        if is_connected:
+            logger.info("Redis connection test: SUCCESS")
+            return True
+        else:
+            logger.warning("Redis connection test: FAILED - Redis responded but connection test failed")
+            return False
+    except Exception as e:
+        logger.error("Redis connection test: ERROR - %s", str(e))
+        return False
+
 # Example usage
 if __name__ == "__main__":
     async def main():
@@ -757,6 +1026,10 @@ if __name__ == "__main__":
                               help='Preserve Redis cache on startup (cleared by default)')
             parser.add_argument('--query', type=str, 
                               help='Query to run (optional)', default=None)
+            parser.add_argument('--unstructured', action='store_true',
+                              help='Use unstructured output from OpenAI and Gemini (structured by default)')
+            parser.add_argument('--test-redis', action='store_true',
+                              help='Test Redis connection and exit')
             args = parser.parse_args()
             
             # Check model availability before proceeding
@@ -776,7 +1049,13 @@ if __name__ == "__main__":
             # Use provided query or default example
             query = args.query if args.query else "Which blood test package is best for monitoring cardiovascular health?"
             
-            response = await analyzer.recommend_packages(query)
+            # Set whether to use structured output (structured by default)
+            use_structured = not args.unstructured
+            
+            # Log whether using structured or unstructured output
+            logger.info("%s output mode for agent communication", "Structured" if use_structured else "Unstructured")
+            
+            response = await analyzer.recommend_packages(query, use_structured_output=use_structured)
             log_section("Recommendation Results")
             
             # Format the output for terminal readability
@@ -787,9 +1066,26 @@ if __name__ == "__main__":
                 
             print('\n'.join(formatted_lines))
             
+            if args.test_redis:
+                log_section("Testing Redis Connection")
+                is_connected = check_redis_connection()
+                if is_connected:
+                    # Get more Redis details
+                    info = redis_cache.get_redis_info()
+                    print(f"Redis server version: {info.get('redis_version', 'unknown')}")
+                    print(f"Connected clients: {info.get('connected_clients', 'unknown')}")
+                    print(f"Used memory: {info.get('used_memory_human', 'unknown')}")
+                    print(f"Uptime: {info.get('uptime_in_days', 'unknown')} days")
+                    # Cache stats if available
+                    print(f"Cache keys: {redis_cache.get_cache_stats().get('total_keys', 'unknown')}")
+                else:
+                    print("Redis connection failed. Please check your Redis server.")
+                sys.exit(0)
+            
         except Exception as e:
             logger.critical(f"Failed to run the advisor: {e}")
             print(f"\nERROR: {e}")
             print("Please check the logs for more details.")
     
+    import asyncio
     asyncio.run(main())

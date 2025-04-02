@@ -9,6 +9,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import List, Dict, Any, Optional, Union
 import logging
 from colorlog import ColoredFormatter
+import redis_cache
+import argparse
 
 # Environment variables should be loaded by the calling script
 # This ensures we don't have duplicate loading or timing issues
@@ -113,12 +115,14 @@ class BloodTestKitAdvisor:
     Multi-agent system for recommending blood test kits using Claude, OpenAI, and Gemini.
     """
     
-    def __init__(self, data_path: str = "data/products.json"):
+    def __init__(self, data_path: str = "data/products.json", use_cache: bool = True, clear_cache_on_start: bool = True):
         """
         Initialize the advisor with API clients and load dataset.
         
         Args:
             data_path: Path to the JSON file containing blood test products
+            use_cache: Whether to use Redis caching
+            clear_cache_on_start: Whether to clear cache on initialization
         """
         log_section("Initializing Blood Test Kit Advisor")
         
@@ -133,6 +137,19 @@ class BloodTestKitAdvisor:
         # Initialize OpenAI and Gemini models
         self.openai, _ = initialize_openai()
         self.gemini, _ = initialize_gemini()
+        
+        # Initialize Redis cache
+        self.use_cache = use_cache
+        if self.use_cache:
+            cache_success = redis_cache.initialize_redis()
+            if cache_success:
+                logger.info("Redis cache initialized successfully")
+                if clear_cache_on_start:
+                    redis_cache.invalidate_cache()
+                    logger.info("Redis cache cleared on startup (default behavior)")
+            else:
+                logger.warning("Redis cache initialization failed, continuing without caching")
+                self.use_cache = False
         
         # Load dataset
         self.data_path = data_path
@@ -338,10 +355,27 @@ class BloodTestKitAdvisor:
     async def analyze_cost_effectiveness(self) -> str:
         """
         Use OpenAI to analyze the cost-effectiveness of packages.
+        Uses Redis cache when available.
         
         Returns:
             Analysis of cost per biomarker for each package
         """
+        if not self.use_cache:
+            # Original implementation without caching
+            return await self._analyze_cost_effectiveness_uncached()
+        
+        # Use cached_or_compute to handle caching
+        async def compute_analysis():
+            return await self._analyze_cost_effectiveness_uncached()
+        
+        return await redis_cache.cached_or_compute(
+            "cost_analysis", 
+            self.products["products"], 
+            compute_analysis
+        )
+    
+    async def _analyze_cost_effectiveness_uncached(self) -> str:
+        """Original implementation without caching"""
         products_json = json.dumps(self.products["products"], indent=2)
         
         messages = [
@@ -363,10 +397,30 @@ class BloodTestKitAdvisor:
     async def categorize_biomarkers(self) -> str:
         """
         Use Gemini to categorize biomarkers by health function.
+        Uses Redis cache when available.
         
         Returns:
             Categorized biomarker information
         """
+        if not self.use_cache:
+            # Original implementation without caching
+            return await self._categorize_biomarkers_uncached()
+        
+        # Extract all unique biomarkers
+        all_biomarkers = self._extract_unique_biomarkers()
+        
+        # Use cached_or_compute to handle caching
+        async def compute_categorization():
+            return await self._categorize_biomarkers_with_biomarkers(all_biomarkers)
+        
+        return await redis_cache.cached_or_compute(
+            "biomarker_categories", 
+            all_biomarkers, 
+            compute_categorization
+        )
+    
+    def _extract_unique_biomarkers(self) -> list:
+        """Extract all unique biomarkers from products"""
         all_biomarkers = []
         
         # Collect all unique biomarkers from all products
@@ -384,7 +438,10 @@ class BloodTestKitAdvisor:
                             all_biomarkers.extend(product["biomarkers"])
         
         # Remove duplicates
-        unique_biomarkers = list(set(all_biomarkers))
+        return list(set(all_biomarkers))
+    
+    async def _categorize_biomarkers_with_biomarkers(self, unique_biomarkers: list) -> str:
+        """Categorize the given list of biomarkers"""
         biomarkers_json = json.dumps(unique_biomarkers, indent=2)
         
         messages = [
@@ -402,6 +459,30 @@ class BloodTestKitAdvisor:
         
         response = await self.gemini_query(messages)
         return response
+    
+    async def _categorize_biomarkers_uncached(self) -> str:
+        """Original implementation without caching"""
+        unique_biomarkers = self._extract_unique_biomarkers()
+        return await self._categorize_biomarkers_with_biomarkers(unique_biomarkers)
+    
+    def clear_cache(self, cache_type: str = None):
+        """
+        Clear the Redis cache.
+        
+        Args:
+            cache_type: Type of cache to clear ("cost_analysis", "biomarker_categories") 
+                       or None to clear all
+        """
+        if not self.use_cache:
+            logger.warning("Cache not enabled, nothing to clear")
+            return
+            
+        if cache_type:
+            redis_cache.invalidate_cache(cache_type)
+            logger.info(f"Cleared {cache_type} cache")
+        else:
+            redis_cache.invalidate_cache()
+            logger.info("Cleared all cache entries")
     
     async def recommend_packages(self, query: str) -> str:
         """
@@ -666,10 +747,18 @@ async def check_model_availability():
 
 # Example usage
 if __name__ == "__main__":
-    import asyncio
-    
     async def main():
         try:
+            # Parse command-line arguments
+            parser = argparse.ArgumentParser(description='Blood Test Kit Advisor')
+            parser.add_argument('--no-cache', action='store_true', 
+                              help='Disable Redis caching (enabled by default)')
+            parser.add_argument('--preserve-cache', action='store_true', 
+                              help='Preserve Redis cache on startup (cleared by default)')
+            parser.add_argument('--query', type=str, 
+                              help='Query to run (optional)', default=None)
+            args = parser.parse_args()
+            
             # Check model availability before proceeding
             log_section("Starting Blood Test Kit Advisor")
             logger.info("Checking model availability...")
@@ -677,16 +766,20 @@ if __name__ == "__main__":
             # First ensure models are available
             model_status = await check_model_availability()
             
-            # If we get here, Claude is available (since the function would raise an error otherwise)
-            analyzer = BloodTestKitAdvisor()
+            # Initialize the analyzer with cache settings
+            # Redis is enabled by default and cleared by default
+            analyzer = BloodTestKitAdvisor(
+                use_cache=not args.no_cache,
+                clear_cache_on_start=not args.preserve_cache
+            )
             
-            # Example query
-            query = "Which blood test package is best for monitoring cardiovascular health?"
+            # Use provided query or default example
+            query = args.query if args.query else "Which blood test package is best for monitoring cardiovascular health?"
             
             response = await analyzer.recommend_packages(query)
             log_section("Recommendation Results")
             
-            # Format the output for terminal readability - add line wrapping and spacing
+            # Format the output for terminal readability
             formatted_lines = []
             for paragraph in response.split('\n\n'):
                 formatted_lines.append(paragraph)

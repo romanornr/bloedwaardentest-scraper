@@ -11,3 +11,4 @@ playwright>=1.5.1
 asyncio>=3.4.3
 colorlog>=6.9.0
 price-parser>=0.4.0
+redis>=4.5.0

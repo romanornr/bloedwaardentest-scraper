@@ -6,14 +6,14 @@ from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any # Removed Optional, Union
 import logging
 from colorlog import ColoredFormatter
 import redis_cache
 import argparse
 import re
 import sys
-import redis
+# import redis # Removed unused import
 
 # Environment variables should be loaded by the calling script
 # This ensures we don't have duplicate loading or timing issues
@@ -90,7 +90,7 @@ def log_section(title, char='═', width=80):
     padding = (width - len(title) - 2) // 2
     separator = char * width
     logger.info(separator)
-    logger.info(f"{char * padding} {title} {char * padding}")
+    logger.info("%s %s %s", char * padding, title, char * padding)
     logger.info(separator)
     # Also print to terminal for direct visibility
     print(separator)
@@ -108,9 +108,9 @@ def log_model_init(model_type, model_name, success=True):
         status = "✗"
         status_msg = "FAILED"
     
-    logger.info(f"┌─ {model_type} Model Initialization ───────────────────────")
-    logger.info(f"│ Status: {status} {status_msg}")
-    logger.info(f"│ Model:  {model_name}")
+    logger.info("┌─ %s Model Initialization ───────────────────────", model_type)
+    logger.info("│ Status: %s %s", status, status_msg)
+    logger.info("│ Model:  %s", model_name)
     logger.info("└───────────────────────────────────────────────────────")
 
 class BloodTestKitAdvisor:
@@ -157,7 +157,7 @@ class BloodTestKitAdvisor:
         # Load dataset
         self.data_path = data_path
         self.products = self._load_products()
-        logger.info(f"Loaded dataset with {len(self.products.get('products', []))} products")
+        logger.info("Loaded dataset with %d products", len(self.products.get('products', [])))
         
         # Set up system prompts for each agent
         self.claude_system_prompt = """
@@ -203,6 +203,20 @@ class BloodTestKitAdvisor:
         
         Respond with scientifically accurate categorizations and explanations.
         """
+
+        self.openai_synthesis_prompt = """
+        You are an AI assistant skilled at synthesizing complex information into clear, user-friendly recommendations.
+        Your role is to take analysis from different sources (biomarker weighting, cost analysis, biomarker categorization)
+        and combine it with raw product data and a user's query to generate a final, coherent recommendation for blood test packages.
+
+        When generating the final recommendation:
+        1.  Address the user's specific query directly.
+        2.  Integrate insights from the weighted cost-effectiveness analysis (which considers biomarker importance).
+        3.  Incorporate the biomarker categorizations provided to explain the relevance of tests.
+        4.  Refer to the specific product data (names, prices, included biomarkers) as needed.
+        5.  Provide clear reasoning for your recommendation(s), explaining *why* certain packages are suitable based on the combined analysis.
+        6.  Present the final output in a helpful, easy-to-understand format for the end-user. Avoid overly technical jargon where possible, but maintain accuracy.
+        """
         
         log_section("Initialization Complete")
     
@@ -224,7 +238,7 @@ class BloodTestKitAdvisor:
                 masked_value = value[:4] + "..." + value[-4:]
             else:
                 masked_value = "None"
-            logger.info(f"{key}: {status} ({masked_value if value else 'Not provided'})")
+            logger.info("%s: %s (%s)", key, status, masked_value if value else 'Not provided')
         
         # Check which optional keys are missing
         missing_optional = []
@@ -234,7 +248,7 @@ class BloodTestKitAdvisor:
             missing_optional.append("GEMINI_API_KEY")
             
         if missing_optional:
-            logger.warning(f"Missing optional API keys: {', '.join(missing_optional)}")
+            logger.warning("Missing optional API keys: %s", ', '.join(missing_optional))
             logger.warning("Claude will be used as a fallback for these capabilities")
             logger.warning("For best results, consider adding these keys to your .env file")
     
@@ -248,7 +262,7 @@ class BloodTestKitAdvisor:
         with open(data_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        logger.info(f"Loaded {len(data['products'])} products from {self.data_path}")
+        logger.info("Loaded %d products from %s", len(data['products']), self.data_path)
         return data
     
     async def claude_query(self, messages: List[Dict[str, str]]) -> str:
@@ -313,47 +327,38 @@ class BloodTestKitAdvisor:
     async def gemini_query(self, messages: List[Dict[str, str]]) -> str:
         """
         Send a query to Gemini and get a response.
-        
+
         Args:
             messages: List of message dictionaries with 'role' and 'content' keys
-            
+
         Returns:
-            Gemini's response text or a fallback message if Gemini is not available
+            Gemini's response text.
+
+        Raises:
+            ValueError: If the Gemini client is not initialized.
+            Exception: If the API call fails for other reasons.
         """
         # Check if Gemini is initialized
         if not self.gemini:
-            logger.warning("Gemini API not available - using Claude as fallback for biomarker categorization")
-            return await self._use_claude_as_gemini_fallback(messages)
-            
-        try:
-            langchain_messages = []
-            
-            for message in messages:
-                if message["role"] == "system":
-                    langchain_messages.append(SystemMessage(content=message["content"]))
-                elif message["role"] == "user":
-                    langchain_messages.append(HumanMessage(content=message["content"]))
-                elif message["role"] == "assistant":
-                    langchain_messages.append(AIMessage(content=message["content"]))
-            
-            response = self.gemini.invoke(langchain_messages)
-            return response.content
-        except Exception as e:
-            logger.warning(f"Error querying Gemini model: {e}")
-            logger.warning("Using Claude as fallback for this query")
-            return await self._use_claude_as_gemini_fallback(messages)
-    
-    async def _use_claude_as_gemini_fallback(self, messages: List[Dict[str, str]]) -> str:
-        """Helper method to use Claude as a fallback for Gemini"""
-        # Extract the user message content for Claude
-        user_content = next((m["content"] for m in messages if m["role"] == "user"), "")
-        # Create a Claude-specific prompt 
-        claude_messages = [
-            {"role": "system", "content": "You are providing biomarker categorization as a fallback for Gemini. Please categorize biomarkers by health function."},
-            {"role": "user", "content": f"Categorize these biomarkers (as a fallback for Gemini):\n\n{user_content}"}
-        ]
-        # Use Claude as fallback
-        return await self.claude_query(claude_messages)
+            logger.error("Gemini client not initialized. Cannot perform Gemini query.")
+            raise ValueError("Gemini client is not available or not initialized.")
+
+        # Exceptions during invoke will now propagate upwards
+        langchain_messages = []
+        for message in messages:
+            if message["role"] == "system":
+                langchain_messages.append(SystemMessage(content=message["content"]))
+            elif message["role"] == "user":
+                langchain_messages.append(HumanMessage(content=message["content"]))
+            elif message["role"] == "assistant":
+                langchain_messages.append(AIMessage(content=message["content"]))
+
+        logger.debug("Sending query to Gemini model...") # Add some logging
+        response = self.gemini.invoke(langchain_messages)
+        logger.debug("Received response from Gemini.")
+        return response.content
+
+    # Removed _use_claude_as_gemini_fallback method as it's no longer needed
     
     async def analyze_cost_effectiveness(self) -> str:
         """
@@ -677,33 +682,42 @@ class BloodTestKitAdvisor:
             """
             }
         ]
-        
-        response = await self.gemini_query(messages)
-        
-        # Apply the same fix to this function's JSON parsing section
+
         try:
-            # Extract JSON if it's wrapped in markdown code blocks
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                json_str = response.split("```")[1].split("```")[0].strip()
-            else:
-                json_str = response.strip()
-            
-            # Fix common JSON formatting issues
-            json_str = self._fix_json_formatting(json_str)
-            
-            return json.loads(json_str)
-        except json.JSONDecodeError as e:
-            logger.warning("Failed to parse Gemini response as JSON: %s", e)
-            logger.warning("Falling back to unstructured response")
-            # Return fallback structure
-            return {
-                "categories": [],
-                "important_general_health_markers": [],
-                "summary": response,
-                "parsing_error": str(e)
-            }
+            # Attempt to get categorization from Gemini
+            logger.info("Querying Gemini for structured biomarker categorization...")
+            response = await self.gemini_query(messages)
+            logger.info("Received response from Gemini.")
+
+            # Attempt to parse the JSON response
+            try:
+                # Extract JSON if it's wrapped in markdown code blocks
+                if "```json" in response:
+                    json_str = response.split("```json")[1].split("```")[0].strip()
+                elif "```" in response:
+                    json_str = response.split("```")[1].split("```")[0].strip()
+                else:
+                    json_str = response.strip()
+
+                # Fix common JSON formatting issues
+                json_str = self._fix_json_formatting(json_str)
+
+                logger.debug("Attempting to parse Gemini JSON response: %s...", json_str[:200])
+                parsed_response = json.loads(json_str)
+                logger.info("Successfully parsed Gemini JSON response.")
+                return parsed_response
+
+            except json.JSONDecodeError as e:
+                logger.error("Failed to parse essential Gemini response as JSON: %s", e)
+                logger.error("Raw Gemini response snippet: %s...", response[:200])
+                # Raise an error because categorization is essential and failed
+                raise ValueError("Failed to parse critical biomarker categorization from Gemini.") from e
+
+        except Exception as e:
+            # Catch errors from gemini_query (e.g., API errors, client not initialized)
+            logger.error("Failed to get biomarker categorization from Gemini: %s", e)
+            # Re-raise the exception to stop the process
+            raise RuntimeError("Essential biomarker categorization step failed.") from e
     
     def clear_cache(self, cache_type: str = None):
         """
@@ -719,7 +733,7 @@ class BloodTestKitAdvisor:
             
         if cache_type:
             redis_cache.invalidate_cache(cache_type)
-            logger.info(f"Cleared {cache_type} cache")
+            logger.info("Cleared %s cache", cache_type)
         else:
             redis_cache.invalidate_cache()
             logger.info("Cleared all cache entries")
@@ -810,7 +824,7 @@ class BloodTestKitAdvisor:
             json_str = self._fix_json_formatting(json_str)
             
             # For debugging
-            logger.debug(f"Attempting to parse fixed JSON: {json_str[:200]}...")
+            logger.debug("Attempting to parse fixed JSON: %s...", json_str[:200])
             
             # Try parsing the fixed JSON
             try:
@@ -832,19 +846,19 @@ class BloodTestKitAdvisor:
             # Ensure all weights are numeric
             for key, value in list(weights.items()):
                 if not isinstance(value, (int, float)) or value < 1 or value > 10:
-                    logger.warning(f"Invalid weight value for {key}: {value}, defaulting to 5")
+                    logger.warning("Invalid weight value for %s: %s, defaulting to 5", key, value)
                     weights[key] = 5
         
-            logger.info(f"Successfully parsed weights for {len(weights)} biomarkers")
+            logger.info("Successfully parsed weights for %d biomarkers", len(weights))
             
             return weights
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse biomarker weights as JSON: {e}")
-            logger.warning(f"Raw response: {response[:200]}...")
+            logger.warning("Failed to parse biomarker weights as JSON: %s", e)
+            logger.warning("Raw response: %s...", response[:200])
             
             # Create default weights as fallback
             default_weights = {biomarker: 5 for biomarker in unique_biomarkers}
-            logger.info(f"Using default weight (5) for all {len(default_weights)} biomarkers")
+            logger.info("Using default weight (5) for all %d biomarkers", len(default_weights))
             return default_weights
     
     async def analyze_weighted_cost_effectiveness(self, query: str = None) -> dict:
@@ -916,101 +930,103 @@ class BloodTestKitAdvisor:
             Claude's recommendation based on inputs from all agents
         """
         try:
-            # Get weighted cost-effectiveness analysis
+            # 1. Get weighted cost-effectiveness analysis
             logger.info("Generating weighted cost-effectiveness analysis based on query")
             weighted_analysis = await self.analyze_weighted_cost_effectiveness(query)
+            weighted_analysis_json = json.dumps(weighted_analysis, indent=2) # Prepare JSON early
+
+            # 2. Get biomarker categorization from Gemini (with specific error handling)
+            biomarker_categories_data = None
+            try:
+                if use_structured_output:
+                    logger.info("Getting structured biomarker categorization from Gemini")
+                    biomarker_categories_data = await self.categorize_biomarkers_structured()
+                    biomarker_categories_json = json.dumps(biomarker_categories_data, indent=2)
+                else:
+                    logger.info("Getting unstructured biomarker categorization from Gemini")
+                    biomarker_categories_data = await self.categorize_biomarkers()
+                    biomarker_categories_text = biomarker_categories_data # Keep as string
+            except Exception as gemini_error:
+                logger.error("Gemini categorization step failed: %s", gemini_error, exc_info=True)
+                # Raise a specific error to halt the process as per the revised plan
+                raise RuntimeError("Gemini categorization failed, cannot proceed with recommendation.") from gemini_error
+
+            # 3. Prepare data for final synthesis
+            products_json = json.dumps(self.products["products"], indent=2)
             
-            if use_structured_output:
-                # Get structured biomarker categorization from Gemini
-                logger.info("Getting structured biomarker categorization from Gemini (or fallback)")
-                biomarker_categories_structured = await self.categorize_biomarkers_structured()
-                
-                logger.info("Generating final recommendation with Claude using structured inputs")
-                products_json = json.dumps(self.products["products"], indent=2)
-                
-                # Convert structured data to string representations for Claude
-                weighted_analysis_json = json.dumps(weighted_analysis, indent=2)
-                biomarker_categories_json = json.dumps(biomarker_categories_structured, indent=2)
-                
-                messages = [
-                    {"role": "system", "content": self.claude_system_prompt},
-                    {"role": "user", "content": f"""
-                    I need a recommendation for blood test packages based on this query:
-                    "{query}"
-                    
-                    Here is the data to consider:
-                    
-                    1. Available blood test packages:
-                    {products_json}
-                    
-                    2. Weighted cost-effectiveness analysis (considers biomarker importance):
-                    {weighted_analysis_json}
-                    
-                    3. Biomarker categorization:
-                    {biomarker_categories_json}
-                    
-                    Based on all this information, what blood test package(s) would you recommend for this query?
-                    Explain your reasoning considering biomarker coverage, weighted cost-effectiveness, and relevance to the query.
-                    """
-                    }
-                ]
-            else:
-                # Get unstructured outputs from Gemini
-                logger.info("Getting unstructured biomarker categorization from Gemini (or fallback)")
-                biomarker_categories = await self.categorize_biomarkers()
-                
-                logger.info("Generating final recommendation with Claude using unstructured inputs")
-                products_json = json.dumps(self.products["products"], indent=2)
-                weighted_analysis_json = json.dumps(weighted_analysis, indent=2)
-                
-                messages = [
-                    {"role": "system", "content": self.claude_system_prompt},
-                    {"role": "user", "content": f"""
-                    I need a recommendation for blood test packages based on this query:
-                    "{query}"
-                    
-                    Here is the data to consider:
-                    
-                    1. Available blood test packages:
-                    {products_json}
-                    
-                    2. Weighted cost-effectiveness analysis (considers biomarker importance):
-                    {weighted_analysis_json}
-                    
-                    3. Biomarker categorization:
-                    {biomarker_categories}
-                    
-                    Based on all this information, what blood test package(s) would you recommend for this query?
-                    Explain your reasoning considering biomarker coverage, weighted cost-effectiveness, and relevance to the query.
-                    """
-                    }
-                ]
+            # Determine categorization format for the prompt
+            categorization_input = biomarker_categories_json if use_structured_output else biomarker_categories_text
+
+            # 4. Final Synthesis using OpenAI (if available)
+            if not self.openai: # Corrected attribute name
+                logger.error("OpenAI client not available. Cannot perform final synthesis.")
+                # Decide how to handle this - maybe fallback to Claude or return error?
+                # For now, let's return an error consistent with halting on critical failures.
+                return "Error: OpenAI client not configured. Cannot generate recommendation."
+
+            logger.info("Generating final recommendation with OpenAI using structured/unstructured inputs")
             
-            response = await self.claude_query(messages)
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error generating recommendation: {e}")
-            # Fallback to basic Claude response if the multi-agent approach fails
-            fallback_messages = [
-                {"role": "system", "content": "You are an expert in blood test analysis. Answer directly based on available data."},
+            # Construct messages for OpenAI
+            messages = [
+                {"role": "system", "content": self.openai_synthesis_prompt}, # Use OpenAI specific prompt
                 {"role": "user", "content": f"""
                 I need a recommendation for blood test packages based on this query:
                 "{query}"
-                
+
+                Here is the data to consider:
+
+                1. Available blood test packages:
+                {products_json}
+
+                2. Weighted cost-effectiveness analysis (considers biomarker importance):
+                {weighted_analysis_json}
+
+                3. Biomarker categorization:
+                {categorization_input}
+
+                Based on all this information, what blood test package(s) would you recommend for this query?
+                Explain your reasoning considering biomarker coverage, weighted cost-effectiveness, and relevance to the query based on the provided categorization.
+                """
+                }
+            ]
+
+            # Call OpenAI
+            response = await self.openai_query(messages) # Use OpenAI query method
+            return response
+
+        except RuntimeError as e:
+             # Catch the specific error from the Gemini step
+            logger.error("Halting recommendation due to critical error: %s", e)
+            return f"Error processing your query: {e}\n\nPlease check the logs or try again later."
+
+        except Exception as e:
+            logger.error("An unexpected error occurred during recommendation generation: %s", e, exc_info=True)
+            # Fallback to basic Claude response ONLY if the error was NOT the Gemini failure
+            logger.warning("Attempting fallback recommendation using Claude due to unexpected error.")
+            fallback_messages = [
+                {"role": "system", "content": "You are an expert in blood test analysis. Answer directly based on available data."},
+                {"role": "user", "content": f"""
+                An error occurred during the detailed analysis. Please provide a basic recommendation for blood test packages based on this query:
+                "{query}"
+
                 Here are the available blood test packages:
                 {json.dumps(self.products["products"], indent=2)}
-                
-                Provide a direct recommendation with basic reasoning.
+
+                Provide a direct recommendation with basic reasoning, acknowledging the limited analysis.
                 """}
             ]
-            
+
             try:
-                fallback_response = await self.claude_query(fallback_messages)
-                return f"[Using simplified analysis due to an error with the multi-agent system]\n\n{fallback_response}"
+                if self.claude: # Corrected attribute name, Check if Claude client is available for fallback
+                    fallback_response = await self.claude_query(fallback_messages)
+                    return f"[Using simplified analysis due to an unexpected error in the multi-agent system]\n\n{fallback_response}"
+                else:
+                    logger.error("Claude client not available for fallback.")
+                    return f"Error processing your query: {e}\n\nFallback mechanism also unavailable. Please try again or simplify your query."
             except Exception as fallback_error:
-                logger.error(f"Critical error, even fallback failed: {fallback_error}")
-                return f"Error processing your query: {e}\n\nPlease try again or simplify your query."
+                logger.error("Critical error, even fallback failed: %s", fallback_error, exc_info=True)
+                # Use the original error 'e' in the final message for clarity on the root cause
+                return f"Error processing your query: {e}\n\nFallback attempt also failed. Please try again or simplify your query."
 
 def initialize_claude(model_name="claude-3-7-sonnet-20250219"):
     """
@@ -1027,7 +1043,7 @@ def initialize_claude(model_name="claude-3-7-sonnet-20250219"):
         log_model_init("Claude", model_name)
         return model, True
     except Exception as e:
-        logger.error(f"Failed to initialize Claude model: {e}")
+        logger.error("Failed to initialize Claude model: %s", e)
         log_model_init("Claude", model_name, success=False)
         return None, False
 
@@ -1050,7 +1066,7 @@ def initialize_openai(model_name="o3-2025-04-16"):
         log_model_init("OpenAI", model_name)
         return model, True
     except Exception as e:
-        logger.warning(f"Failed to initialize OpenAI model: {e}")
+        logger.warning("Failed to initialize OpenAI model: %s", e)
         log_model_init("OpenAI", model_name, success=False)
         return None, False
 
@@ -1076,7 +1092,7 @@ def initialize_gemini(model_name="gemini-2.5-pro-preview-03-25"):
         log_model_init("Gemini", model_name)
         return model, True
     except Exception as e:
-        logger.warning(f"Failed to initialize Gemini model: {e}")
+        logger.warning("Failed to initialize Gemini model: %s", e)
         log_model_init("Gemini", model_name, success=False)
         return None, False
 
@@ -1122,7 +1138,7 @@ async def check_model_availability():
                 
         except Exception as e:
             results["claude"]["message"] = f"Error: {str(e)}"
-            logger.error(f"✗ Claude model test failed: {e}")
+            logger.error("✗ Claude model test failed: %s", e)
     else:
         results["claude"]["message"] = "Initialization failed"
         
@@ -1156,7 +1172,7 @@ async def check_model_availability():
                 
         except Exception as e:
             results["openai"]["message"] = f"Error: {str(e)}"
-            logger.warning(f"✗ OpenAI model test failed: {e}")
+            logger.warning("✗ OpenAI model test failed: %s", e)
     else:
         results["openai"]["message"] = "Not configured or initialization failed"
     
@@ -1185,15 +1201,15 @@ async def check_model_availability():
                 
         except Exception as e:
             results["gemini"]["message"] = f"Error: {str(e)}"
-            logger.warning(f"✗ Gemini model test failed: {e}")
+            logger.warning("✗ Gemini model test failed: %s", e)
     else:
         results["gemini"]["message"] = "Not configured or initialization failed"
         
     # Print summary
     logger.info("Model availability summary:")
-    logger.info(f"Claude: {'✓' if results['claude']['available'] else '✗'} ({results['claude']['message']})")
-    logger.info(f"OpenAI: {'✓' if results['openai']['available'] else '✗'} ({results['openai']['message']})")
-    logger.info(f"Gemini: {'✓' if results['gemini']['available'] else '✗'} ({results['gemini']['message']})")
+    logger.info("Claude: %s (%s)", '✓' if results['claude']['available'] else '✗', results['claude']['message'])
+    logger.info("OpenAI: %s (%s)", '✓' if results['openai']['available'] else '✗', results['openai']['message'])
+    logger.info("Gemini: %s (%s)", '✓' if results['gemini']['available'] else '✗', results['gemini']['message'])
     
     if not results["claude"]["available"]:
         logger.error("Claude is required and not available. Application cannot run.")
@@ -1204,7 +1220,7 @@ async def check_model_availability():
 def check_redis_connection():
     """Check if Redis connection is working properly"""
     try:
-        import redis_cache
+        # import redis_cache # Removed redundant import
         is_connected = redis_cache.test_connection()
         if is_connected:
             logger.info("Redis connection test: SUCCESS")
@@ -1239,7 +1255,7 @@ if __name__ == "__main__":
             logger.info("Checking model availability...")
             
             # First ensure models are available
-            model_status = await check_model_availability()
+            await check_model_availability() # Removed assignment to unused variable
             
             # Initialize the analyzer with cache settings
             # Redis is enabled by default and cleared by default
@@ -1285,7 +1301,7 @@ if __name__ == "__main__":
                 sys.exit(0)
             
         except Exception as e:
-            logger.critical(f"Failed to run the advisor: {e}")
+            logger.critical("Failed to run the advisor: %s", e)
             print(f"\nERROR: {e}")
             print("Please check the logs for more details.")
     

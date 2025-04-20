@@ -491,7 +491,7 @@ class BloodTestKitAdvisor:
             }
     
     def _fix_json_formatting(self, json_str: str) -> str:
-        """Fix common JSON formatting issues like trailing commas"""
+        """Fix common JSON formatting issues"""
         # Remove trailing commas before closing brackets or braces
         json_str = re.sub(r',\s*}', '}', json_str)
         json_str = re.sub(r',\s*\]', ']', json_str)
@@ -499,7 +499,30 @@ class BloodTestKitAdvisor:
         # Fix any missing quotes around keys (basic fix)
         json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
         
-        return json_str
+        # More aggressive fix: ensure all keys are properly quoted
+        # This will handle keys with special characters like colons, spaces, parentheses
+        lines = json_str.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # Skip lines that don't look like key-value pairs
+            if ':' not in line:
+                fixed_lines.append(line)
+                continue
+            
+            # Check if this looks like a key-value pair with an unquoted or improperly quoted key
+            key_pattern = re.search(r'^\s*"?([^"]*?)"?\s*:', line)
+            if key_pattern:
+                key = key_pattern.group(1)
+                # Replace the original key with a properly quoted version
+                fixed_line = line.replace(f'{key}:', f'"{key}":')
+                # Make sure we didn't double-quote
+                fixed_line = fixed_line.replace('""', '"')
+                fixed_lines.append(fixed_line)
+            else:
+                fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
     
     async def categorize_biomarkers(self) -> str:
         """
@@ -701,6 +724,186 @@ class BloodTestKitAdvisor:
             redis_cache.invalidate_cache()
             logger.info("Cleared all cache entries")
     
+    async def analyze_biomarker_weights(self, query: str = None) -> dict:
+        """
+        Use Claude to assign weights to biomarkers based on health importance and query relevance.
+        
+        Args:
+            query: User's health query or concern (optional)
+            
+        Returns:
+            Dictionary mapping biomarkers to their importance weights
+        """
+        unique_biomarkers = self._extract_unique_biomarkers()
+        biomarkers_json = json.dumps(unique_biomarkers, indent=2)
+        
+        prompt_context = ""
+        if query:
+            prompt_context = f"""
+            User query: "{query}"
+            
+            Consider this specific health concern when weighting biomarkers.
+            """
+        
+        messages = [
+            {"role": "system", "content": """
+             You are a medical expert specializing in laboratory diagnostics.
+             Assign importance weights to blood test biomarkers on a scale of 1-10 where:
+             
+             10 = Critical biomarker that provides fundamental health insights
+             7-9 = Very important biomarker for general health assessment
+             4-6 = Moderately important biomarker in specific contexts
+             1-3 = Complementary biomarker with limited standalone value
+             
+             Consider factors like:
+             - Clinical significance in disease detection and monitoring
+             - Relevance to common health conditions
+             - Diagnostic specificity and sensitivity
+             - Relevance to the user's specific health query if provided
+             
+             CRITICALLY IMPORTANT: Your response MUST be ONLY a valid JSON object, formatted as:
+             {
+                 "Biomarker Name": 9,
+                 "Another Biomarker": 8
+             }
+             
+             IMPORTANT JSON FORMATTING RULES:
+             1. Every biomarker name MUST be enclosed in double quotes
+             2. Use only numbers (1-10) as values, not strings
+             3. No trailing commas at the end of lists or objects
+             4. No comments or extra text
+             """
+            },
+            {"role": "user", "content": f"""
+             Assign importance weights (1-10) to these biomarkers:
+             {biomarkers_json}
+             
+             {prompt_context}
+             
+             Return ONLY valid JSON. Every key must be in double quotes. Every value must be a number.
+             
+             Important: Some biomarker names contain special characters (colons, parentheses, etc.).
+             Make sure ALL biomarker names are properly enclosed in double quotes in your JSON response.
+             """
+            }
+        ]
+        
+        response = await self.claude_query(messages)
+        
+        # Extract JSON from response with improved robustness
+        try:
+            # Remove any non-JSON content
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            else:
+                # Try to find where the JSON object starts and ends
+                start_idx = response.find('{')
+                end_idx = response.rfind('}') + 1
+                if start_idx >= 0 and end_idx > start_idx:
+                    json_str = response[start_idx:end_idx]
+                else:
+                    json_str = response.strip()
+            
+            # Apply more extensive JSON formatting fixes
+            json_str = self._fix_json_formatting(json_str)
+            
+            # For debugging
+            logger.debug(f"Attempting to parse fixed JSON: {json_str[:200]}...")
+            
+            # Try parsing the fixed JSON
+            try:
+                weights = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Last resort: manually build the dictionary
+                weights = {}
+                pattern = r'"([^"]+)":\s*(\d+)'
+                matches = re.findall(pattern, json_str)
+                for biomarker, weight in matches:
+                    try:
+                        weights[biomarker] = int(weight)
+                    except ValueError:
+                        weights[biomarker] = 5
+            
+            if not weights:
+                raise json.JSONDecodeError("Failed to extract key-value pairs", json_str, 0)
+        
+            # Ensure all weights are numeric
+            for key, value in list(weights.items()):
+                if not isinstance(value, (int, float)) or value < 1 or value > 10:
+                    logger.warning(f"Invalid weight value for {key}: {value}, defaulting to 5")
+                    weights[key] = 5
+        
+            logger.info(f"Successfully parsed weights for {len(weights)} biomarkers")
+            
+            return weights
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse biomarker weights as JSON: {e}")
+            logger.warning(f"Raw response: {response[:200]}...")
+            
+            # Create default weights as fallback
+            default_weights = {biomarker: 5 for biomarker in unique_biomarkers}
+            logger.info(f"Using default weight (5) for all {len(default_weights)} biomarkers")
+            return default_weights
+    
+    async def analyze_weighted_cost_effectiveness(self, query: str = None) -> dict:
+        """
+        Calculate weighted cost-effectiveness using biomarker importance weights.
+        
+        Args:
+            query: User's health query to consider when weighting (optional)
+            
+        Returns:
+            Dictionary with weighted cost-effectiveness analysis
+        """
+        # Get biomarker weights
+        biomarker_weights = await self.analyze_biomarker_weights(query)
+        
+        # Default weight for biomarkers not in the weights dictionary
+        default_weight = 5
+        
+        products_data = []
+        for product in self.products["products"]:
+            product_biomarkers = []
+            if "biomarkers" in product:
+                if isinstance(product["biomarkers"], list):
+                    if len(product["biomarkers"]) > 0:
+                        if isinstance(product["biomarkers"][0], dict):
+                            # Handle categorized biomarkers
+                            for category in product["biomarkers"]:
+                                if "markers" in category:
+                                    product_biomarkers.extend(category["markers"])
+                        else:
+                            # Handle flat list biomarkers
+                            product_biomarkers = product["biomarkers"]
+            
+            # Calculate weighted biomarker value
+            total_weight = sum(biomarker_weights.get(marker, default_weight) for marker in product_biomarkers)
+            
+            # Calculate weighted cost per unit of importance
+            price = product.get("price", 0)
+            weighted_cost_effectiveness = price / total_weight if total_weight > 0 else float('inf')
+            
+            products_data.append({
+                "name": product.get("name", "Unknown"),
+                "price": price,
+                "biomarker_count": len(product_biomarkers),
+                "total_importance_weight": total_weight,
+                "weighted_cost_per_importance_unit": round(weighted_cost_effectiveness, 2),
+                "raw_cost_per_biomarker": round(price / len(product_biomarkers) if product_biomarkers else 0, 2),
+                "biomarkers": product_biomarkers
+            })
+        
+        # Sort by weighted cost-effectiveness
+        products_data.sort(key=lambda x: x["weighted_cost_per_importance_unit"])
+        
+        return {
+            "products": products_data,
+            "weights": biomarker_weights,
+            "query_context": query
+        }
+
     async def recommend_packages(self, query: str, use_structured_output: bool = True) -> str:
         """
         Process a user query and provide package recommendations.
@@ -713,11 +916,12 @@ class BloodTestKitAdvisor:
             Claude's recommendation based on inputs from all agents
         """
         try:
+            # Get weighted cost-effectiveness analysis
+            logger.info("Generating weighted cost-effectiveness analysis based on query")
+            weighted_analysis = await self.analyze_weighted_cost_effectiveness(query)
+            
             if use_structured_output:
-                # Get structured outputs from OpenAI and Gemini
-                logger.info("Getting structured cost-effectiveness analysis from OpenAI (or fallback)")
-                cost_analysis_structured = await self.analyze_cost_effectiveness_structured()
-                
+                # Get structured biomarker categorization from Gemini
                 logger.info("Getting structured biomarker categorization from Gemini (or fallback)")
                 biomarker_categories_structured = await self.categorize_biomarkers_structured()
                 
@@ -725,7 +929,7 @@ class BloodTestKitAdvisor:
                 products_json = json.dumps(self.products["products"], indent=2)
                 
                 # Convert structured data to string representations for Claude
-                cost_analysis_json = json.dumps(cost_analysis_structured, indent=2)
+                weighted_analysis_json = json.dumps(weighted_analysis, indent=2)
                 biomarker_categories_json = json.dumps(biomarker_categories_structured, indent=2)
                 
                 messages = [
@@ -739,27 +943,25 @@ class BloodTestKitAdvisor:
                     1. Available blood test packages:
                     {products_json}
                     
-                    2. Cost-effectiveness analysis (JSON structured):
-                    {cost_analysis_json}
+                    2. Weighted cost-effectiveness analysis (considers biomarker importance):
+                    {weighted_analysis_json}
                     
-                    3. Biomarker categorization (JSON structured):
+                    3. Biomarker categorization:
                     {biomarker_categories_json}
                     
                     Based on all this information, what blood test package(s) would you recommend for this query?
-                    Explain your reasoning considering biomarker coverage, cost-effectiveness, and relevance to the query.
+                    Explain your reasoning considering biomarker coverage, weighted cost-effectiveness, and relevance to the query.
                     """
                     }
                 ]
             else:
-                # Get unstructured outputs from OpenAI and Gemini (original implementation)
-                logger.info("Getting unstructured cost-effectiveness analysis from OpenAI (or fallback)")
-                cost_analysis = await self.analyze_cost_effectiveness()
-                
+                # Get unstructured outputs from Gemini
                 logger.info("Getting unstructured biomarker categorization from Gemini (or fallback)")
                 biomarker_categories = await self.categorize_biomarkers()
                 
                 logger.info("Generating final recommendation with Claude using unstructured inputs")
                 products_json = json.dumps(self.products["products"], indent=2)
+                weighted_analysis_json = json.dumps(weighted_analysis, indent=2)
                 
                 messages = [
                     {"role": "system", "content": self.claude_system_prompt},
@@ -772,14 +974,14 @@ class BloodTestKitAdvisor:
                     1. Available blood test packages:
                     {products_json}
                     
-                    2. Cost-effectiveness analysis:
-                    {cost_analysis}
+                    2. Weighted cost-effectiveness analysis (considers biomarker importance):
+                    {weighted_analysis_json}
                     
                     3. Biomarker categorization:
                     {biomarker_categories}
                     
                     Based on all this information, what blood test package(s) would you recommend for this query?
-                    Explain your reasoning considering biomarker coverage, cost-effectiveness, and relevance to the query.
+                    Explain your reasoning considering biomarker coverage, weighted cost-effectiveness, and relevance to the query.
                     """
                     }
                 ]
@@ -829,7 +1031,7 @@ def initialize_claude(model_name="claude-3-7-sonnet-20250219"):
         log_model_init("Claude", model_name, success=False)
         return None, False
 
-def initialize_openai(model_name="gpt-3.5-turbo-0125"):
+def initialize_openai(model_name="o3-2025-04-16"):
     """
     Initialize the OpenAI model if API key is available
     
@@ -852,7 +1054,7 @@ def initialize_openai(model_name="gpt-3.5-turbo-0125"):
         log_model_init("OpenAI", model_name, success=False)
         return None, False
 
-def initialize_gemini(model_name="gemini-1.5-flash-latest"):
+def initialize_gemini(model_name="gemini-2.5-pro-preview-03-25"):
     """
     Initialize the Gemini model if API key is available
     

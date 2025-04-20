@@ -791,12 +791,13 @@ async def extract_biomarkers_from_ordered_list(page):
 async def main():
     urls = [
         'https://www.bloedwaardentest.nl/bloedonderzoek/check-up/',
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/bioleeftijd/',
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/bioleeftijd/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/schildklier/',
         'https://www.bloedwaardentest.nl/bloedonderzoek/insidetracker/',
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/hormonen-mannen/',
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/',
-        #'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/hormonen/hormonen-mannen/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/sport-test/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/vitamines-mineralen/',
+        'https://www.bloedwaardentest.nl/bloedonderzoek/ziekten/'
         # Add other URLs as needed
     ]
     
